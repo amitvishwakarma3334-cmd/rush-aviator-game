@@ -1,0 +1,6 @@
+{
+  "name": "Aviator Flight Crash Demo",
+  "description": "A full-stack aviation-themed crash multiplier simulation game with virtual demo coins, server-validated provably fair rounds, user wallet, simulated deposit/withdrawal workflows, and a role-protected administrator control panel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

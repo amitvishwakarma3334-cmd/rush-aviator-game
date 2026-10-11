@@ -1,8 +1,25 @@
 {
   "name": "rush-aviator-game",
+  "main": "src/worker.ts",
   "compatibility_date": "2025-04-01",
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
-  }
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AVIATOR_STORE",
+        "class_name": "AviatorStore"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AviatorStore"]
+    }
+  ]
 }

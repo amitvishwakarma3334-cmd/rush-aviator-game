@@ -40,6 +40,10 @@ export interface TransferRequestRecord {
   amount: number;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   mobileNumber?: string;
+  accountHolderName?: string;
+  bankAccountNumber?: string;
+  maskedAccountNumber?: string;
+  ifscCode?: string;
   upiId?: string;
   userNote: string;
   adminNote: string;
@@ -79,6 +83,7 @@ export interface ActiveRoundBet {
   betId: string;
   userId: string;
   username: string;
+  slotId: string;
   amount: number;
   autoCashout: number | null;
   cashedOut: boolean;
@@ -846,7 +851,19 @@ export async function handleEdgeApiRequest(
     }
     const auth = await getSessionFromReq(req, dbState, secret);
     const game = dbState.game;
-    const myBet = auth ? game.bets.find((b) => b.userId === auth.user.id) || null : null;
+    const userBets = auth ? game.bets.filter((b) => b.userId === auth.user.id) : [];
+    const myBets = userBets.map((b) => ({
+      betId: b.betId,
+      userId: b.userId,
+      username: b.username,
+      slotId: b.slotId || 'slot-1',
+      amount: b.amount,
+      autoCashout: b.autoCashout,
+      cashedOut: b.cashedOut,
+      cashoutMultiplier: b.cashoutMultiplier,
+      payout: b.payout,
+    }));
+    const myBet = myBets[0] || null;
 
     return jsonResponse({
       roundId: game.roundId,
@@ -858,12 +875,14 @@ export async function handleEdgeApiRequest(
       serverSeed: live.phase === 'CRASHED' ? game.serverSeed : null,
       activeBets: game.bets.map((b) => ({
         username: b.username,
+        slotId: b.slotId || 'slot-1',
         amount: b.amount,
         cashedOut: b.cashedOut,
         cashoutMultiplier: b.cashoutMultiplier,
         payout: b.payout,
       })),
       myBet,
+      myBets,
       recentHistory: game.recentHistory.slice(0, 12),
       userBalance: auth ? auth.user.balance : null,
     });
@@ -900,8 +919,11 @@ export async function handleEdgeApiRequest(
     const body = (await req.json().catch(() => ({}))) as {
       amount?: number;
       autoCashout?: number | null;
+      slotId?: string;
     };
     const betAmount = roundCoins(Number(body.amount));
+    const normalizedSlotId = body.slotId ? String(body.slotId).trim() : 'slot-1';
+
     if (!Number.isFinite(betAmount) || betAmount < 1) {
       return jsonResponse({ error: 'Minimum bet amount is ₹1.00.' }, 400);
     }
@@ -921,8 +943,8 @@ export async function handleEdgeApiRequest(
     }
 
     const currentUser = auth.user;
-    if (dbState.game.bets.some((b) => b.userId === currentUser.id)) {
-      return jsonResponse({ error: 'You already have an active bet for this flight round.' }, 409);
+    if (dbState.game.bets.some((b) => b.userId === currentUser.id && (b.slotId || 'slot-1') === normalizedSlotId)) {
+      return jsonResponse({ error: `You already have an active bet in ${normalizedSlotId} for this flight round.` }, 409);
     }
     if (currentUser.balance < betAmount) {
       return jsonResponse({ error: 'Insufficient balance for this bet.' }, 400);
@@ -935,6 +957,7 @@ export async function handleEdgeApiRequest(
       betId: `bet_${Date.now()}_${randomHex(3)}`,
       userId: currentUser.id,
       username: currentUser.username,
+      slotId: normalizedSlotId,
       amount: betAmount,
       autoCashout: parsedAutoCashout,
       cashedOut: false,
@@ -952,7 +975,7 @@ export async function handleEdgeApiRequest(
       balanceBefore,
       balanceAfter: currentUser.balance,
       referenceId: dbState.game.roundId,
-      description: `Placed bet on round ${dbState.game.roundId}`,
+      description: `Placed bet on round ${dbState.game.roundId} (${normalizedSlotId})`,
       createdAt: new Date().toISOString(),
     });
 
@@ -977,7 +1000,18 @@ export async function handleEdgeApiRequest(
       return jsonResponse({ error: 'Flight is not active or has already flown away.' }, 400);
     }
 
-    const activeBet = dbState.game.bets.find((b) => b.userId === auth.user.id);
+    const body = (await req.json().catch(() => ({}))) as { slotId?: string };
+    const targetSlotId = body.slotId ? String(body.slotId).trim() : undefined;
+
+    let activeBet: ActiveRoundBet | undefined;
+    if (targetSlotId) {
+      activeBet = dbState.game.bets.find(
+        (b) => b.userId === auth.user.id && (b.slotId || 'slot-1') === targetSlotId
+      );
+    } else {
+      activeBet = dbState.game.bets.find((b) => b.userId === auth.user.id && !b.cashedOut);
+    }
+
     if (!activeBet) {
       return jsonResponse({ error: 'No active bet found for your account in this round.' }, 404);
     }
@@ -991,6 +1025,7 @@ export async function handleEdgeApiRequest(
 
     return jsonResponse({
       success: true,
+      slotId: activeBet.slotId,
       cashoutMultiplier: activeBet.cashoutMultiplier,
       payout: activeBet.payout,
       balance: auth.user.balance,
@@ -1012,7 +1047,13 @@ export async function handleEdgeApiRequest(
         placeholderQrUrl: dbState.config.placeholderQrUrl,
       },
       transactions: dbState.transactions.filter((t) => t.userId === currentUser.id).slice(0, 100),
-      requests: dbState.requests.filter((r) => r.userId === currentUser.id).slice(0, 100),
+      requests: dbState.requests
+        .filter((r) => r.userId === currentUser.id)
+        .slice(0, 100)
+        .map((r) => {
+          const { bankAccountNumber: _omit, ...rest } = r;
+          return rest;
+        }),
     });
   }
 
@@ -1078,21 +1119,56 @@ export async function handleEdgeApiRequest(
     const body = (await req.json().catch(() => ({}))) as {
       amount?: number;
       mobileNumber?: string;
+      accountHolderName?: string;
+      bankAccountNumber?: string;
+      confirmBankAccountNumber?: string;
+      ifscCode?: string;
       upiId?: string;
       userNote?: string;
     };
+
     const cleanAmount = roundCoins(Number(body.amount));
-    const cleanMobile = (body.mobileNumber || '').trim();
+    const cleanMobile = (body.mobileNumber || '').trim().replace(/[\s\-+]/g, '');
+    const cleanHolderName = (body.accountHolderName || '').trim();
+    const cleanAccount = (body.bankAccountNumber || '').trim().replace(/\s+/g, '');
+    const cleanConfirm = (body.confirmBankAccountNumber || '').trim().replace(/\s+/g, '');
+    const cleanIfsc = (body.ifscCode || '').trim().toUpperCase();
     const cleanUpi = (body.upiId || '').trim();
 
+    // 1. Minimum withdrawal amount ₹10
     if (!Number.isFinite(cleanAmount) || cleanAmount < 10) {
       return jsonResponse({ error: 'Minimum withdrawal amount is ₹10.00.' }, 400);
     }
-    if (!cleanMobile || !/^[0-9+\-\s]{10,15}$/.test(cleanMobile)) {
+
+    // 2. Validate Mobile Number (10 digits)
+    if (!cleanMobile || !/^\d{10}$/.test(cleanMobile)) {
       return jsonResponse({ error: 'Please enter a valid 10-digit mobile number.' }, 400);
     }
-    if (!cleanUpi || cleanUpi.length < 3 || cleanUpi.length > 80) {
-      return jsonResponse({ error: 'Please enter your UPI ID or Account Number.' }, 400);
+
+    // 3. Validate Account Holder Name
+    if (!cleanHolderName || cleanHolderName.length < 2 || cleanHolderName.length > 70) {
+      return jsonResponse({ error: 'Please enter a valid Bank Account Holder Name (2 to 70 characters).' }, 400);
+    }
+
+    // 4. Validate Bank Account Number (9 to 18 digits)
+    if (!cleanAccount || !/^\d{9,18}$/.test(cleanAccount)) {
+      return jsonResponse({ error: 'Bank Account Number must be between 9 and 18 digits.' });
+    }
+
+    // 5. Validate Confirm Bank Account Number
+    if (cleanConfirm !== cleanAccount) {
+      return jsonResponse({ error: 'Bank Account Number and Confirm Account Number do not match.' }, 400);
+    }
+
+    // 6. Validate IFSC Code format (11 alphanumeric characters)
+    if (!cleanIfsc || !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(cleanIfsc)) {
+      return jsonResponse(
+        {
+          error:
+            'Please enter a valid 11-character IFSC code (format: 4 letters, 0, then 6 alphanumeric characters, e.g. SBIN0001234).',
+        },
+        400
+      );
     }
 
     const currentUser = auth.user;
@@ -1116,17 +1192,27 @@ export async function handleEdgeApiRequest(
     const dateCode = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const requestId = `WDR-${dateCode}-${randomHex(3).toUpperCase()}`;
     const nowIso = new Date().toISOString();
+
+    // Mask bank account number (only reveal last 4 digits)
+    const maskedAccount =
+      cleanAccount.length > 4
+        ? `•••• •••• ${cleanAccount.slice(-4)}`
+        : cleanAccount;
+
     const balanceBefore = currentUser.balance;
     currentUser.balance = roundCoins(currentUser.balance - cleanAmount);
 
     const combinedNote = [
+      `Holder: ${cleanHolderName}`,
+      `A/C: ${maskedAccount}`,
+      `IFSC: ${cleanIfsc}`,
       `Mobile: ${cleanMobile}`,
-      `UPI/Number: ${cleanUpi}`,
+      cleanUpi ? `UPI: ${cleanUpi}` : '',
       body.userNote ? body.userNote.trim() : '',
     ]
       .filter(Boolean)
       .join(' · ')
-      .slice(0, 180);
+      .slice(0, 240);
 
     const requestRecord: TransferRequestRecord = {
       id: requestId,
@@ -1136,6 +1222,10 @@ export async function handleEdgeApiRequest(
       amount: cleanAmount,
       status: 'PENDING',
       mobileNumber: cleanMobile,
+      accountHolderName: cleanHolderName,
+      bankAccountNumber: cleanAccount,
+      maskedAccountNumber: maskedAccount,
+      ifscCode: cleanIfsc,
       upiId: cleanUpi,
       userNote: combinedNote,
       adminNote: '',
@@ -1154,14 +1244,15 @@ export async function handleEdgeApiRequest(
       balanceBefore,
       balanceAfter: currentUser.balance,
       referenceId: requestId,
-      description: `Reserved ₹${cleanAmount.toFixed(2)} for withdrawal ${requestId} (${cleanUpi})`,
+      description: `Reserved ₹${cleanAmount.toFixed(2)} for withdrawal ${requestId} (${cleanHolderName} · ${maskedAccount})`,
       createdAt: nowIso,
     });
 
     await storage.save(dbState);
+    const { bankAccountNumber: _omitAcc, ...sanitizedRecord } = requestRecord;
     return jsonResponse(
       {
-        request: requestRecord,
+        request: sanitizedRecord,
         balance: currentUser.balance,
         message: 'Withdrawal request submitted and amount reserved awaiting administrator review.',
       },
@@ -1230,6 +1321,10 @@ export async function handleEdgeApiRequest(
         transactions: dbState.transactions.slice(0, 200),
         auditLogs: dbState.auditLogs.slice(0, 200),
       });
+    }
+
+    if (pathname === '/api/admin/requests' && req.method === 'GET') {
+      return jsonResponse({ requests: dbState.requests.slice(0, 200) });
     }
 
     const balanceMatch = pathname.match(/^\/api\/admin\/users\/([^/]+)\/balance$/);

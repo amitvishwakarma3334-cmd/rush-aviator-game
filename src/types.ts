@@ -10,6 +10,7 @@ export interface User {
 
 export interface ActiveBetPublic {
   username: string;
+  slotId?: string;
   amount: number;
   cashedOut: boolean;
   cashoutMultiplier: number | null;
@@ -19,7 +20,16 @@ export interface ActiveBetPublic {
 export interface MyActiveBet extends ActiveBetPublic {
   betId: string;
   userId: string;
+  slotId: string;
   autoCashout: number | null;
+}
+
+export interface BettingSlotConfig {
+  id: string;
+  label: string;
+  badge: string;
+  defaultAmount: string;
+  defaultAutoCashout: string;
 }
 
 export interface CrashRoundHistoryItem {
@@ -40,6 +50,7 @@ export interface GameStateResponse {
   serverSeed: string | null;
   activeBets: ActiveBetPublic[];
   myBet: MyActiveBet | null;
+  myBets: MyActiveBet[];
   recentHistory: CrashRoundHistoryItem[];
   userBalance: number | null;
 }
@@ -72,6 +83,10 @@ export interface TransferRequestRecord {
   amount: number;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   mobileNumber?: string;
+  accountHolderName?: string;
+  bankAccountNumber?: string;
+  maskedAccountNumber?: string;
+  ifscCode?: string;
   upiId?: string;
   userNote: string;
   adminNote: string;

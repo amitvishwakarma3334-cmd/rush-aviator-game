@@ -4,6 +4,8 @@ import {
   ArrowUpRight,
   CheckCircle2,
   Clock,
+  Eye,
+  EyeOff,
   RefreshCw,
   Wallet,
   XCircle,
@@ -44,11 +46,16 @@ export const WalletView: React.FC<WalletViewProps> = ({
     message: string;
   } | null>(null);
 
-  // Withdrawal Form State (Amount + Mobile Number + UPI ID / Number)
+  // Withdrawal Form State (Bank details + Mobile Number + IFSC)
   const [withdrawAmount, setWithdrawAmount] = useState<string>('100');
   const [withdrawMobile, setWithdrawMobile] = useState<string>('');
+  const [withdrawHolderName, setWithdrawHolderName] = useState<string>('');
+  const [withdrawAccountNumber, setWithdrawAccountNumber] = useState<string>('');
+  const [withdrawConfirmAccount, setWithdrawConfirmAccount] = useState<string>('');
+  const [withdrawIfsc, setWithdrawIfsc] = useState<string>('');
   const [withdrawUpi, setWithdrawUpi] = useState<string>('');
   const [withdrawNote, setWithdrawNote] = useState<string>('');
+  const [showAccountNumber, setShowAccountNumber] = useState<boolean>(false);
   const [withdrawSubmitting, setWithdrawSubmitting] = useState<boolean>(false);
   const [withdrawFeedback, setWithdrawFeedback] = useState<{
     type: 'success' | 'error';
@@ -168,19 +175,48 @@ export const WalletView: React.FC<WalletViewProps> = ({
       });
       return;
     }
-    const cleanMobile = withdrawMobile.trim();
-    if (!cleanMobile || !/^[0-9+\-\s]{10,15}$/.test(cleanMobile)) {
+
+    const cleanMobile = withdrawMobile.trim().replace(/[\s\-+]/g, '');
+    if (!cleanMobile || !/^\d{10}$/.test(cleanMobile)) {
       setWithdrawFeedback({
         type: 'error',
         message: 'Please enter a valid 10-digit mobile number.',
       });
       return;
     }
-    const cleanUpi = withdrawUpi.trim();
-    if (!cleanUpi || cleanUpi.length < 3) {
+
+    const cleanHolder = withdrawHolderName.trim();
+    if (!cleanHolder || cleanHolder.length < 2 || cleanHolder.length > 70) {
       setWithdrawFeedback({
         type: 'error',
-        message: 'Please enter your UPI ID or Account Number.',
+        message: 'Please enter a valid Bank Account Holder Name (2 to 70 characters).',
+      });
+      return;
+    }
+
+    const cleanAccount = withdrawAccountNumber.trim().replace(/\s+/g, '');
+    if (!cleanAccount || !/^\d{9,18}$/.test(cleanAccount)) {
+      setWithdrawFeedback({
+        type: 'error',
+        message: 'Bank Account Number must be between 9 and 18 digits.',
+      });
+      return;
+    }
+
+    const cleanConfirm = withdrawConfirmAccount.trim().replace(/\s+/g, '');
+    if (cleanConfirm !== cleanAccount) {
+      setWithdrawFeedback({
+        type: 'error',
+        message: 'Bank Account Number and Confirm Account Number do not match.',
+      });
+      return;
+    }
+
+    const cleanIfsc = withdrawIfsc.trim().toUpperCase();
+    if (!cleanIfsc || !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(cleanIfsc)) {
+      setWithdrawFeedback({
+        type: 'error',
+        message: 'Please enter a valid 11-character IFSC code (e.g., SBIN0001234, HDFC0000001).',
       });
       return;
     }
@@ -193,8 +229,12 @@ export const WalletView: React.FC<WalletViewProps> = ({
         body: JSON.stringify({
           amount: num,
           mobileNumber: cleanMobile,
-          upiId: cleanUpi,
-          userNote: withdrawNote,
+          accountHolderName: cleanHolder,
+          bankAccountNumber: cleanAccount,
+          confirmBankAccountNumber: cleanConfirm,
+          ifscCode: cleanIfsc,
+          upiId: withdrawUpi.trim(),
+          userNote: withdrawNote.trim(),
         }),
       });
       const data = await res.json();
@@ -206,9 +246,14 @@ export const WalletView: React.FC<WalletViewProps> = ({
       } else {
         setWithdrawFeedback({
           type: 'success',
-          message: `Withdrawal request submitted. Reference ID: ${data.request.id} · Status: Pending`,
+          message: `Withdrawal request submitted successfully. Reference ID: ${data.request.id} · Status: Pending Review`,
         });
+        // Clear sensitive bank details from state immediately
         setWithdrawMobile('');
+        setWithdrawHolderName('');
+        setWithdrawAccountNumber('');
+        setWithdrawConfirmAccount('');
+        setWithdrawIfsc('');
         setWithdrawUpi('');
         setWithdrawNote('');
         await fetchWalletData();
@@ -424,7 +469,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
         </div>
       )}
 
-      {/* WITHDRAW SECTION (Amount + Mobile Number + UPI ID / Number) */}
+      {/* WITHDRAW SECTION (Amount + Mobile + Bank Account + Confirm Account + IFSC) */}
       {subTab === 'withdraw' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
           <div className="lg:col-span-7 bg-[#121723] border border-slate-800 rounded-2xl p-6 space-y-4">
@@ -433,15 +478,16 @@ export const WalletView: React.FC<WalletViewProps> = ({
                 Withdraw Funds
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Enter your withdrawal amount (minimum ₹10.00), mobile number, and UPI ID or payout number.
+                Enter your withdrawal amount (minimum ₹10.00), mobile number, and verified bank account details.
               </p>
             </div>
 
             <form onSubmit={handleWithdrawSubmit} className="space-y-4 pt-2">
+              {/* Amount & Presets */}
               <div>
                 <div className="flex items-center justify-between text-xs mb-1.5">
                   <span className="font-medium text-slate-300">
-                    Withdrawal Amount (Minimum ₹10)
+                    Withdrawal Amount (Minimum ₹10) *
                   </span>
                   <span className="text-slate-400 font-mono-tabular">
                     Balance: ₹{balance.toFixed(2)}
@@ -462,6 +508,13 @@ export const WalletView: React.FC<WalletViewProps> = ({
                       ₹{preset}
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    onClick={() => setWithdrawAmount(String(Math.floor(balance)))}
+                    className="px-3 py-1.5 rounded-lg text-xs font-mono-tabular font-semibold bg-slate-800 text-rose-400 hover:bg-slate-700 transition-colors cursor-pointer"
+                  >
+                    MAX
+                  </button>
                 </div>
                 <input
                   type="number"
@@ -475,34 +528,131 @@ export const WalletView: React.FC<WalletViewProps> = ({
                 />
               </div>
 
+              {/* Mobile Number & Account Holder Name */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                    Mobile Number *
+                    Mobile Number (10 Digits) *
                   </label>
                   <input
                     type="tel"
                     required
-                    maxLength={15}
+                    maxLength={10}
                     value={withdrawMobile}
-                    onChange={(e) => setWithdrawMobile(e.target.value)}
+                    onChange={(e) => setWithdrawMobile(e.target.value.replace(/\D/g, '').slice(0, 10))}
                     className="w-full px-3.5 py-2.5 rounded-xl bg-[#0A0D14] border border-slate-700 text-white font-mono-tabular text-sm focus:outline-none focus:border-rose-500"
-                    placeholder="e.g., 9876543210"
+                    placeholder="e.g. 9876543210"
                   />
                 </div>
 
                 <div>
                   <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                    UPI ID or UPI / Account Number *
+                    Bank Account Holder Name *
                   </label>
                   <input
                     type="text"
                     required
+                    maxLength={70}
+                    value={withdrawHolderName}
+                    onChange={(e) => setWithdrawHolderName(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#0A0D14] border border-slate-700 text-white text-sm focus:outline-none focus:border-rose-500"
+                    placeholder="Full name as per bank records"
+                  />
+                </div>
+              </div>
+
+              {/* Bank Account Number & Confirm Account Number */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-medium text-slate-300">
+                      Bank Account Number *
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setShowAccountNumber(!showAccountNumber)}
+                      className="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1 cursor-pointer"
+                    >
+                      {showAccountNumber ? (
+                        <>
+                          <EyeOff className="w-3.5 h-3.5" />
+                          <span>Hide</span>
+                        </>
+                      ) : (
+                        <>
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>Show</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <input
+                    type={showAccountNumber ? 'text' : 'password'}
+                    required
+                    maxLength={18}
+                    value={withdrawAccountNumber}
+                    onChange={(e) => setWithdrawAccountNumber(e.target.value.replace(/\D/g, '').slice(0, 18))}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#0A0D14] border border-slate-700 text-white font-mono-tabular text-sm focus:outline-none focus:border-rose-500"
+                    placeholder="9 to 18 digit account number"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                    Confirm Bank Account Number *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={18}
+                    value={withdrawConfirmAccount}
+                    onChange={(e) => setWithdrawConfirmAccount(e.target.value.replace(/\D/g, '').slice(0, 18))}
+                    className={`w-full px-3.5 py-2.5 rounded-xl bg-[#0A0D14] border text-white font-mono-tabular text-sm focus:outline-none ${
+                      withdrawConfirmAccount && withdrawConfirmAccount !== withdrawAccountNumber
+                        ? 'border-rose-500 text-rose-200'
+                        : 'border-slate-700 focus:border-rose-500'
+                    }`}
+                    placeholder="Re-enter bank account number"
+                  />
+                  {withdrawConfirmAccount && withdrawConfirmAccount !== withdrawAccountNumber && (
+                    <span className="text-[11px] text-rose-400 mt-1 block">
+                      Account numbers do not match
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* IFSC Code & Optional UPI ID */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                    IFSC Code *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={11}
+                    value={withdrawIfsc}
+                    onChange={(e) => setWithdrawIfsc(e.target.value.toUpperCase().slice(0, 11))}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#0A0D14] border border-slate-700 text-white font-mono-tabular uppercase text-sm focus:outline-none focus:border-rose-500"
+                    placeholder="e.g. SBIN0001234"
+                  />
+                  <span className="text-[11px] text-slate-500 mt-1 block">
+                    11 characters (4 letters, 0, 6 alphanumeric)
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                    UPI ID (Optional)
+                  </label>
+                  <input
+                    type="text"
                     maxLength={80}
                     value={withdrawUpi}
                     onChange={(e) => setWithdrawUpi(e.target.value)}
                     className="w-full px-3.5 py-2.5 rounded-xl bg-[#0A0D14] border border-slate-700 text-white text-sm focus:outline-none focus:border-rose-500"
-                    placeholder="e.g., username@upi or 9876543210"
+                    placeholder="e.g. username@upi"
                   />
                 </div>
               </div>
@@ -557,16 +707,22 @@ export const WalletView: React.FC<WalletViewProps> = ({
                   <strong className="text-white">01. Minimum Limit:</strong> Withdrawal requests require a minimum amount of ₹10.00 and cannot exceed your available balance.
                 </p>
                 <p>
-                  <strong className="text-white">02. Required Details:</strong> Please provide both your active mobile number and your UPI ID or payout number so the administrator can verify and process your request.
+                  <strong className="text-white">02. Verified Banking Details:</strong> Please provide your active mobile number, Account Holder Name, Bank Account Number, and valid IFSC Code.
                 </p>
                 <p>
-                  <strong className="text-white">03. Automatic Refund on Rejection:</strong> If a pending withdrawal request is declined, the reserved amount is automatically restored to your balance.
+                  <strong className="text-white">03. Privacy & Masking:</strong> Sensitive bank account numbers are masked (<code className="text-rose-400 font-mono-tabular">•••• •••• 1234</code>) and never stored in client browser storage.
+                </p>
+                <p>
+                  <strong className="text-white">04. Pending Review:</strong> Requests remain in a pending state until reviewed and approved by an authorized administrator.
+                </p>
+                <p>
+                  <strong className="text-white">05. Automatic Refund on Rejection:</strong> If a pending request is rejected by the administrator, the reserved amount is automatically refunded back to your balance.
                 </p>
               </div>
             </div>
 
             <div className="pt-4 border-t border-slate-800 text-xs text-slate-400">
-              Track your request status and reference ID below.
+              Track your request status and reference ID in the history below.
             </div>
           </div>
         </div>
@@ -590,7 +746,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
               No deposit or withdrawal requests submitted yet.
             </div>
           ) : (
-            <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+            <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
               {requests.map((req) => (
                 <div
                   key={req.id}
@@ -624,18 +780,29 @@ export const WalletView: React.FC<WalletViewProps> = ({
 
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-slate-400">
-                      {req.type === 'DEPOSIT' ? 'Deposit' : 'Withdraw'}
+                      {req.type === 'DEPOSIT' ? 'Deposit' : 'Withdrawal'}
                     </span>
                     <span className="font-mono-tabular font-bold text-white">
                       ₹{req.amount.toFixed(2)}
                     </span>
                   </div>
 
-                  {(req.mobileNumber || req.upiId) && (
-                    <div className="text-xs text-slate-300 font-mono-tabular">
-                      {req.mobileNumber ? `Mobile: ${req.mobileNumber}` : ''}
-                      {req.mobileNumber && req.upiId ? ' · ' : ''}
-                      {req.upiId ? `UPI/No: ${req.upiId}` : ''}
+                  {/* Bank & Payment Details with Masking */}
+                  {(req.accountHolderName || req.maskedAccountNumber || req.ifscCode || req.mobileNumber || req.upiId) && (
+                    <div className="text-xs text-slate-300 font-mono-tabular space-y-0.5 pt-1 border-t border-slate-800/60">
+                      {req.accountHolderName && (
+                        <div>Holder: <span className="text-white font-medium">{req.accountHolderName}</span></div>
+                      )}
+                      {req.maskedAccountNumber && (
+                        <div>Bank A/C: <span className="text-slate-200 font-bold">{req.maskedAccountNumber}</span></div>
+                      )}
+                      {req.ifscCode && (
+                        <div>IFSC: <span className="text-rose-400 font-bold">{req.ifscCode}</span></div>
+                      )}
+                      <div className="text-slate-400 flex flex-wrap gap-2">
+                        {req.mobileNumber && <span>Mobile: {req.mobileNumber}</span>}
+                        {req.upiId && <span>UPI: {req.upiId}</span>}
+                      </div>
                     </div>
                   )}
 

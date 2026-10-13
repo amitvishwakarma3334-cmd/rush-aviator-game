@@ -1,7 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ShieldCheck, Volume2, VolumeX, X } from 'lucide-react';
+import {
+  RotateCcw,
+  ShieldCheck,
+  SlidersHorizontal,
+  Volume1,
+  Volume2,
+  VolumeX,
+  X,
+} from 'lucide-react';
 import type { CrashRoundHistoryItem, GameStateResponse } from '../types';
-import { soundFx } from '../utils/sound';
+import { soundFx, type AudioSettings } from '../utils/sound';
 
 interface AviatorCanvasProps {
   gameState: GameStateResponse;
@@ -9,21 +17,42 @@ interface AviatorCanvasProps {
 
 export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [muted, setMuted] = useState<boolean>(soundFx.muted);
+  const mixerRef = useRef<HTMLDivElement | null>(null);
+  const [audioSettings, setAudioSettings] = useState<AudioSettings>(() => soundFx.getSettings());
+  const [showMixer, setShowMixer] = useState<boolean>(false);
   const [selectedHistoryRound, setSelectedHistoryRound] = useState<CrashRoundHistoryItem | null>(null);
-  const prevPhaseRef = useRef<string>(gameState.phase);
 
+  // Synchronize flight audio strictly with server-authoritative game state
   useEffect(() => {
-    if (prevPhaseRef.current === 'FLYING' && gameState.phase === 'CRASHED') {
-      soundFx.playCrash();
-    }
-    prevPhaseRef.current = gameState.phase;
-  }, [gameState.phase]);
+    soundFx.syncWithGameState(gameState.phase, gameState.roundId);
+  }, [gameState.phase, gameState.roundId]);
+
+  // Keep audio settings in sync with soundFx
+  useEffect(() => {
+    const unsubscribe = soundFx.subscribe((settings) => {
+      setAudioSettings(settings);
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  // Close mixer on click outside
+  useEffect(() => {
+    if (!showMixer) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (mixerRef.current && !mixerRef.current.contains(e.target as Node)) {
+        setShowMixer(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showMixer]);
 
   const toggleMute = () => {
-    const next = !muted;
-    soundFx.muted = next;
-    setMuted(next);
+    soundFx.toggleMute();
   };
 
   useEffect(() => {
@@ -295,7 +324,7 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
   return (
     <div className="flex flex-col gap-3">
       {/* Recent Round Multipliers Strip (Interactive buttons to inspect Provably Fair SHA-256 seeds) */}
-      <div className="flex items-center justify-between gap-3 bg-[#111622] border border-slate-800/80 rounded-xl px-3.5 py-2">
+      <div className="flex items-center justify-between gap-3 bg-[#111622] border border-slate-800/80 rounded-xl px-3.5 py-2 relative">
         <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-0.5">
           <span className="text-xs font-medium text-slate-400 whitespace-nowrap shrink-0 mr-1">
             Recent Flights:
@@ -323,17 +352,232 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
           })}
         </div>
 
+        {/* Audio Controls: Master Volume Slider, Mute Button, and Mixer Popover */}
         <div className="flex items-center gap-2 shrink-0">
+          {/* Quick Master Volume Slider (Visible on sm+ screens) */}
+          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs bg-slate-800/80 border border-slate-700/60">
+            <button
+              type="button"
+              onClick={toggleMute}
+              className="text-slate-300 hover:text-white transition-colors cursor-pointer"
+              title={audioSettings.muted ? 'Unmute master audio' : 'Mute master audio'}
+            >
+              {audioSettings.muted || audioSettings.masterVolume === 0 ? (
+                <VolumeX className="w-3.5 h-3.5 text-slate-400" />
+              ) : audioSettings.masterVolume < 0.5 ? (
+                <Volume1 className="w-3.5 h-3.5 text-rose-400" />
+              ) : (
+                <Volume2 className="w-3.5 h-3.5 text-rose-400" />
+              )}
+            </button>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={audioSettings.muted ? 0 : audioSettings.masterVolume}
+              onChange={(e) => {
+                const val = parseFloat(e.target.value);
+                if (audioSettings.muted && val > 0) {
+                  soundFx.setMuted(false);
+                }
+                soundFx.setMasterVolume(val);
+              }}
+              className="w-16 h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-rose-500"
+              title={`Master Volume: ${Math.round(audioSettings.masterVolume * 100)}%`}
+            />
+            <span className="text-[11px] font-mono-tabular text-slate-400 w-8 text-right">
+              {audioSettings.muted ? '0%' : `${Math.round(audioSettings.masterVolume * 100)}%`}
+            </span>
+          </div>
+
+          {/* Mute Button */}
           <button
             type="button"
             onClick={toggleMute}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-slate-300 bg-slate-800/80 hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            title={muted ? 'Unmute flight audio' : 'Mute flight audio'}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              audioSettings.muted
+                ? 'bg-rose-950/60 border border-rose-800/60 text-rose-300'
+                : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300'
+            }`}
+            title={audioSettings.muted ? 'Unmute flight audio' : 'Mute flight audio'}
           >
-            {muted ? <VolumeX className="w-3.5 h-3.5 text-slate-400" /> : <Volume2 className="w-3.5 h-3.5 text-rose-400" />}
-            <span className="hidden sm:inline">{muted ? 'Muted' : 'Audio'}</span>
+            {audioSettings.muted ? (
+              <VolumeX className="w-3.5 h-3.5 text-rose-400" />
+            ) : (
+              <Volume2 className="w-3.5 h-3.5 text-rose-400" />
+            )}
+            <span className="hidden md:inline">{audioSettings.muted ? 'Muted' : 'Audio'}</span>
+          </button>
+
+          {/* Audio Mixer Popover Toggle Button */}
+          <button
+            type="button"
+            onClick={() => setShowMixer((prev) => !prev)}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              showMixer
+                ? 'bg-rose-600 text-white shadow-sm'
+                : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700/60'
+            }`}
+            title="Open Audio Mixer & Balance Settings"
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Mixer</span>
           </button>
         </div>
+
+        {/* Audio Mixer Popover Menu */}
+        {showMixer && (
+          <div
+            ref={mixerRef}
+            className="absolute right-2 sm:right-3.5 top-full mt-2 w-[calc(100vw-2rem)] max-w-sm sm:w-96 bg-[#121723] border border-slate-700 rounded-2xl shadow-2xl p-4.5 z-50 text-slate-200"
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="w-4 h-4 text-rose-400" />
+                <h3 className="text-sm font-semibold text-white">Audio Settings & Mixer</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMixer(false)}
+                className="p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Sliders Container */}
+            <div className="space-y-4 py-3.5">
+              {/* 1. Master Volume */}
+              <div>
+                <div className="flex items-center justify-between text-xs mb-1.5">
+                  <span className="font-medium text-slate-300 flex items-center gap-1.5">
+                    {audioSettings.masterVolume === 0 || audioSettings.muted ? (
+                      <VolumeX className="w-3.5 h-3.5 text-slate-400" />
+                    ) : (
+                      <Volume2 className="w-3.5 h-3.5 text-rose-400" />
+                    )}
+                    Master Volume
+                  </span>
+                  <span className="font-mono-tabular font-bold text-rose-400">
+                    {audioSettings.muted ? 'Muted (0%)' : `${Math.round(audioSettings.masterVolume * 100)}%`}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={audioSettings.muted ? 0 : audioSettings.masterVolume}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    if (audioSettings.muted && val > 0) {
+                      soundFx.setMuted(false);
+                    }
+                    soundFx.setMasterVolume(val);
+                  }}
+                  className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-rose-500"
+                />
+                <div className="flex justify-between text-[10px] text-slate-500 mt-1">
+                  <span>0%</span>
+                  <span>50%</span>
+                  <span>100%</span>
+                </div>
+              </div>
+
+              {/* 2. Flight Audio & Ambient Music (Default 85%) */}
+              <div>
+                <div className="flex items-center justify-between text-xs mb-1">
+                  <span className="font-medium text-slate-300 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
+                    Flight Engine & Background
+                  </span>
+                  <span className="font-mono-tabular font-bold text-emerald-400">
+                    {Math.round(audioSettings.bgVolume * 100)}%
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 mb-1.5">
+                  Plays throughout flight while multiplier rises (Default: ~85%)
+                </p>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={audioSettings.bgVolume}
+                  onChange={(e) => soundFx.setBgVolume(parseFloat(e.target.value))}
+                  className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                />
+              </div>
+
+              {/* 3. Game Sound Effects SFX (Default 90%) */}
+              <div>
+                <div className="flex items-center justify-between text-xs mb-1">
+                  <span className="font-medium text-slate-300 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" />
+                    Game Sound Effects (SFX)
+                  </span>
+                  <span className="font-mono-tabular font-bold text-amber-400">
+                    {Math.round(audioSettings.sfxVolume * 100)}%
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 mb-1.5">
+                  Bets placed, auto-cashout chimes, and crash impacts (Default: ~90%)
+                </p>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={audioSettings.sfxVolume}
+                  onChange={(e) => soundFx.setSfxVolume(parseFloat(e.target.value))}
+                  className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                />
+              </div>
+
+              {/* Volume Balance Status Notice */}
+              <div className="p-2.5 rounded-xl bg-[#0A0D14] border border-slate-800 text-[11px] text-slate-400 flex items-center justify-between gap-2">
+                <span>Audio Balancing:</span>
+                <span className="text-emerald-400 font-medium">Dynamics Compressor Active</span>
+              </div>
+            </div>
+
+            {/* Footer Buttons */}
+            <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => soundFx.playTestChime()}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 transition-colors flex items-center gap-1.5 cursor-pointer"
+                title="Play test audio chime"
+              >
+                <span>Test SFX</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => soundFx.resetDefaults()}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 cursor-pointer"
+                title="Reset to 85% Ambient, 90% SFX, 100% Master"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Defaults</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={toggleMute}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer ${
+                  audioSettings.muted
+                    ? 'bg-rose-600 hover:bg-rose-500 text-white'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                }`}
+              >
+                {audioSettings.muted ? 'Unmute All' : 'Mute All'}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Main Aviation Crash Stage */}

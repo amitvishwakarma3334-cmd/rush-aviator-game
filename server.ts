@@ -58,6 +58,10 @@ export interface TransferRequestRecord {
   amount: number;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   mobileNumber?: string;
+  accountHolderName?: string;
+  bankAccountNumber?: string;
+  maskedAccountNumber?: string;
+  ifscCode?: string;
   upiId?: string;
   userNote: string;
   adminNote: string;
@@ -177,6 +181,10 @@ const TransferRequestSchema = new mongoose.Schema<TransferRequestRecord>({
   amount: { type: Number, required: true },
   status: { type: String, enum: ['PENDING', 'APPROVED', 'REJECTED'], default: 'PENDING' },
   mobileNumber: { type: String, default: '' },
+  accountHolderName: { type: String, default: '' },
+  bankAccountNumber: { type: String, default: '' },
+  maskedAccountNumber: { type: String, default: '' },
+  ifscCode: { type: String, default: '' },
   upiId: { type: String, default: '' },
   userNote: { type: String, default: '' },
   adminNote: { type: String, default: '' },
@@ -422,6 +430,7 @@ interface ActiveRoundBet {
   betId: string;
   userId: string;
   username: string;
+  slotId: string;
   amount: number;
   autoCashout: number | null;
   cashedOut: boolean;
@@ -962,9 +971,19 @@ async function startServer() {
     const countdownMs =
       gameEngine.phase === 'BETTING' ? Math.max(0, gameEngine.bettingDurationMs - elapsed) : 0;
 
-    const myBet = auth
-      ? gameEngine.bets.find((b) => b.userId === auth.user.id) || null
-      : null;
+    const userBets = auth ? gameEngine.bets.filter((b) => b.userId === auth.user.id) : [];
+    const myBets = userBets.map((b) => ({
+      betId: b.betId,
+      userId: b.userId,
+      username: b.username,
+      slotId: b.slotId || 'slot-1',
+      amount: b.amount,
+      autoCashout: b.autoCashout,
+      cashedOut: b.cashedOut,
+      cashoutMultiplier: b.cashoutMultiplier,
+      payout: b.payout,
+    }));
+    const myBet = myBets[0] || null;
 
     res.json({
       roundId: gameEngine.roundId,
@@ -977,12 +996,14 @@ async function startServer() {
       serverSeed: gameEngine.phase === 'CRASHED' ? gameEngine.serverSeed : null,
       activeBets: gameEngine.bets.map((b) => ({
         username: b.username,
+        slotId: b.slotId || 'slot-1',
         amount: b.amount,
         cashedOut: b.cashedOut,
         cashoutMultiplier: b.cashoutMultiplier,
         payout: b.payout,
       })),
       myBet,
+      myBets,
       recentHistory: gameEngine.recentHistory.slice(0, 12),
       userBalance: auth ? auth.user.balance : null,
     });
@@ -990,13 +1011,18 @@ async function startServer() {
 
   app.post('/api/game/bet', requireUser, async (req: Request, res: Response) => {
     const currentUser = (req as Request & { currentUser: UserRecord }).currentUser;
-    if ( currentUser.role !== 'user') {
+    if (currentUser.role !== 'user') {
       res.status(403).json({ error: 'Administrator accounts cannot place bets. Please sign in with a player account.' });
       return;
     }
 
-    const { amount, autoCashout } = req.body as { amount?: number; autoCashout?: number | null };
+    const { amount, autoCashout, slotId } = req.body as {
+      amount?: number;
+      autoCashout?: number | null;
+      slotId?: string;
+    };
     const betAmount = roundCoins(Number(amount));
+    const normalizedSlotId = slotId ? String(slotId).trim() : 'slot-1';
 
     if (!Number.isFinite(betAmount) || betAmount < 1) {
       res.status(400).json({ error: 'Minimum bet amount is ₹1.00.' });
@@ -1022,9 +1048,11 @@ async function startServer() {
         return;
       }
 
-      const alreadyBet = gameEngine.bets.some((b) => b.userId === currentUser.id);
+      const alreadyBet = gameEngine.bets.some(
+        (b) => b.userId === currentUser.id && (b.slotId || 'slot-1') === normalizedSlotId
+      );
       if (alreadyBet) {
-        res.status(409).json({ error: 'You already have an active bet for this flight round.' });
+        res.status(409).json({ error: `You already have an active bet in ${normalizedSlotId} for this flight round.` });
         return;
       }
 
@@ -1040,6 +1068,7 @@ async function startServer() {
         betId: `bet_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
         userId: currentUser.id,
         username: currentUser.username,
+        slotId: normalizedSlotId,
         amount: betAmount,
         autoCashout: parsedAutoCashout,
         cashedOut: false,
@@ -1057,7 +1086,7 @@ async function startServer() {
         balanceBefore,
         balanceAfter: currentUser.balance,
         referenceId: gameEngine.roundId,
-        description: `Placed bet on round ${gameEngine.roundId}`,
+        description: `Placed bet on round ${gameEngine.roundId} (${normalizedSlotId})`,
         createdAt: new Date().toISOString(),
       };
       dbState.transactions.unshift(tx);
@@ -1074,6 +1103,8 @@ async function startServer() {
 
   app.post('/api/game/cashout', requireUser, async (req: Request, res: Response) => {
     const currentUser = (req as Request & { currentUser: UserRecord }).currentUser;
+    const { slotId } = (req.body || {}) as { slotId?: string };
+    const targetSlotId = slotId ? String(slotId).trim() : undefined;
 
     await withLock(async () => {
       if (gameEngine.phase !== 'FLYING') {
@@ -1081,7 +1112,15 @@ async function startServer() {
         return;
       }
 
-      const activeBet = gameEngine.bets.find((b) => b.userId === currentUser.id);
+      let activeBet: ActiveRoundBet | undefined;
+      if (targetSlotId) {
+        activeBet = gameEngine.bets.find(
+          (b) => b.userId === currentUser.id && (b.slotId || 'slot-1') === targetSlotId
+        );
+      } else {
+        activeBet = gameEngine.bets.find((b) => b.userId === currentUser.id && !b.cashedOut);
+      }
+
       if (!activeBet) {
         res.status(404).json({ error: 'No active bet found for your account in this round.' });
         return;
@@ -1096,6 +1135,7 @@ async function startServer() {
 
       res.json({
         success: true,
+        slotId: activeBet.slotId,
         cashoutMultiplier: activeBet.cashoutMultiplier,
         payout: activeBet.payout,
         balance: currentUser.balance,
@@ -1113,7 +1153,12 @@ async function startServer() {
       .slice(0, 100);
     const myRequests = dbState.requests
       .filter((r) => r.userId === currentUser.id)
-      .slice(0, 100);
+      .slice(0, 100)
+      .map((r) => {
+        // Strip unmasked bank account number for privacy
+        const { bankAccountNumber: _omit, ...rest } = r;
+        return rest;
+      });
 
     res.json({
       balance: currentUser.balance,
@@ -1186,27 +1231,69 @@ async function startServer() {
       return;
     }
 
-    const { amount, mobileNumber, upiId, userNote } = req.body as {
+    const {
+      amount,
+      mobileNumber,
+      accountHolderName,
+      bankAccountNumber,
+      confirmBankAccountNumber,
+      ifscCode,
+      upiId,
+      userNote,
+    } = req.body as {
       amount?: number;
       mobileNumber?: string;
+      accountHolderName?: string;
+      bankAccountNumber?: string;
+      confirmBankAccountNumber?: string;
+      ifscCode?: string;
       upiId?: string;
       userNote?: string;
     };
+
     const cleanAmount = roundCoins(Number(amount));
-    const cleanMobile = (mobileNumber || '').trim();
+    const cleanMobile = (mobileNumber || '').trim().replace(/[\s\-+]/g, '');
+    const cleanHolderName = (accountHolderName || '').trim();
+    const cleanAccount = (bankAccountNumber || '').trim().replace(/\s+/g, '');
+    const cleanConfirm = (confirmBankAccountNumber || '').trim().replace(/\s+/g, '');
+    const cleanIfsc = (ifscCode || '').trim().toUpperCase();
     const cleanUpi = (upiId || '').trim();
 
-    // Minimum withdrawal amount ₹10
+    // 1. Minimum withdrawal amount ₹10
     if (!Number.isFinite(cleanAmount) || cleanAmount < 10) {
       res.status(400).json({ error: 'Minimum withdrawal amount is ₹10.00.' });
       return;
     }
-    if (!cleanMobile || !/^[0-9+\-\s]{10,15}$/.test(cleanMobile)) {
+
+    // 2. Validate Mobile Number (10 digits)
+    if (!cleanMobile || !/^\d{10}$/.test(cleanMobile)) {
       res.status(400).json({ error: 'Please enter a valid 10-digit mobile number.' });
       return;
     }
-    if (!cleanUpi || cleanUpi.length < 3 || cleanUpi.length > 80) {
-      res.status(400).json({ error: 'Please enter your UPI ID or Account Number.' });
+
+    // 3. Validate Account Holder Name
+    if (!cleanHolderName || cleanHolderName.length < 2 || cleanHolderName.length > 70) {
+      res.status(400).json({ error: 'Please enter a valid Bank Account Holder Name (2 to 70 characters).' });
+      return;
+    }
+
+    // 4. Validate Bank Account Number (9 to 18 digits)
+    if (!cleanAccount || !/^\d{9,18}$/.test(cleanAccount)) {
+      res.status(400).json({ error: 'Bank Account Number must be between 9 and 18 digits.' });
+      return;
+    }
+
+    // 5. Validate Confirm Bank Account Number
+    if (cleanConfirm !== cleanAccount) {
+      res.status(400).json({ error: 'Bank Account Number and Confirm Account Number do not match.' });
+      return;
+    }
+
+    // 6. Validate IFSC Code format (11 alphanumeric characters)
+    if (!cleanIfsc || !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(cleanIfsc)) {
+      res.status(400).json({
+        error: 'Please enter a valid 11-character IFSC code (format: 4 letters, 0, then 6 alphanumeric characters, e.g. SBIN0001234).',
+      });
       return;
     }
 
@@ -1233,18 +1320,27 @@ async function startServer() {
       const requestId = `WDR-${dateCode}-${uniqueSuffix}`;
       const nowIso = new Date().toISOString();
 
+      // Mask bank account number (only reveal last 4 digits)
+      const maskedAccount =
+        cleanAccount.length > 4
+          ? `•••• •••• ${cleanAccount.slice(-4)}`
+          : cleanAccount;
+
       // Reserve amount immediately so it cannot be double-spent
       const balanceBefore = currentUser.balance;
       currentUser.balance = roundCoins(currentUser.balance - cleanAmount);
 
       const combinedNote = [
+        `Holder: ${cleanHolderName}`,
+        `A/C: ${maskedAccount}`,
+        `IFSC: ${cleanIfsc}`,
         `Mobile: ${cleanMobile}`,
-        `UPI/Number: ${cleanUpi}`,
+        cleanUpi ? `UPI: ${cleanUpi}` : '',
         userNote ? userNote.trim() : '',
       ]
         .filter(Boolean)
         .join(' · ')
-        .slice(0, 180);
+        .slice(0, 240);
 
       const requestRecord: TransferRequestRecord = {
         id: requestId,
@@ -1254,6 +1350,10 @@ async function startServer() {
         amount: cleanAmount,
         status: 'PENDING',
         mobileNumber: cleanMobile,
+        accountHolderName: cleanHolderName,
+        bankAccountNumber: cleanAccount,
+        maskedAccountNumber: maskedAccount,
+        ifscCode: cleanIfsc,
         upiId: cleanUpi,
         userNote: combinedNote,
         adminNote: '',
@@ -1271,7 +1371,7 @@ async function startServer() {
         balanceBefore,
         balanceAfter: currentUser.balance,
         referenceId: requestId,
-        description: `Reserved ₹${cleanAmount.toFixed(2)} for withdrawal ${requestId} (${cleanUpi})`,
+        description: `Reserved ₹${cleanAmount.toFixed(2)} for withdrawal ${requestId} (${cleanHolderName} · ${maskedAccount})`,
         createdAt: nowIso,
       };
 
@@ -1280,8 +1380,10 @@ async function startServer() {
 
       await persistChange({ user: currentUser, request: requestRecord, transaction: reserveTx });
 
+      const { bankAccountNumber: _omitAcc, ...sanitizedRecord } = requestRecord;
+
       res.status(201).json({
-        request: requestRecord,
+        request: sanitizedRecord,
         balance: currentUser.balance,
         message: 'Withdrawal request submitted and amount reserved awaiting administrator review.',
       });
@@ -1351,6 +1453,10 @@ async function startServer() {
       transactions: dbState.transactions.slice(0, 200),
       auditLogs: dbState.auditLogs.slice(0, 200),
     });
+  });
+
+  app.get('/api/admin/requests', requireAdmin, (req: Request, res: Response) => {
+    res.json({ requests: dbState.requests.slice(0, 200) });
   });
 
   app.post('/api/admin/users/:userId/balance', requireAdmin, async (req: Request, res: Response) => {
@@ -1648,8 +1754,11 @@ async function startServer() {
   });
 
   // --------------------------------------------------------------------------
-  // VITE DEV MIDDLEWARE OR PRODUCTION STATIC ASSETS
+  // STATIC ASSETS & VITE DEV MIDDLEWARE
   // --------------------------------------------------------------------------
+  const publicPath = path.join(__dirname, 'public');
+  app.use(express.static(publicPath));
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },

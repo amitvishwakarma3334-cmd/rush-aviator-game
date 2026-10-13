@@ -802,11 +802,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </span>
                     </div>
 
-                    {(req.mobileNumber || req.upiId) && (
-                      <div className="text-xs font-mono-tabular text-emerald-300 flex flex-wrap items-center gap-2">
-                        {req.mobileNumber && <span>Mobile: {req.mobileNumber}</span>}
-                        {req.mobileNumber && req.upiId && <span>·</span>}
-                        {req.upiId && <span>UPI / Account No: {req.upiId}</span>}
+                    {(req.accountHolderName || req.maskedAccountNumber || req.ifscCode || req.mobileNumber || req.upiId) && (
+                      <div className="text-xs font-mono-tabular text-emerald-300 flex flex-wrap items-center gap-2 bg-[#121723] px-2.5 py-1.5 rounded-lg border border-slate-800">
+                        {req.accountHolderName && <span>Holder: <strong className="text-white">{req.accountHolderName}</strong></span>}
+                        {req.accountHolderName && (req.maskedAccountNumber || req.ifscCode) && <span>·</span>}
+                        {req.maskedAccountNumber && <span>A/C: <strong className="text-amber-300">{req.maskedAccountNumber}</strong></span>}
+                        {req.ifscCode && <span>· IFSC: <strong className="text-rose-300">{req.ifscCode}</strong></span>}
+                        {req.mobileNumber && <span>· Mobile: {req.mobileNumber}</span>}
+                        {req.upiId && <span>· UPI: {req.upiId}</span>}
                       </div>
                     )}
 

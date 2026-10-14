@@ -56,6 +56,9 @@ export interface TransferRequestRecord {
   username: string;
   type: 'DEPOSIT' | 'WITHDRAWAL';
   amount: number;
+  bonusAmount?: number;
+  bonusPercent?: number;
+  creditedAmount?: number;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   mobileNumber?: string;
   accountHolderName?: string;
@@ -86,6 +89,14 @@ export interface AuditLogRecord {
 export interface AppConfigRecord {
   welcomeBonus: number;
   placeholderQrUrl: string;
+  logoUrl?: string;
+  depositBonusEnabled?: boolean;
+  depositBonusPercent?: number;
+  minWithdrawalAmount?: number;
+  houseEdgePercent?: number;
+  maxMultiplier?: number;
+  bettingDurationMs?: number;
+  crashedHoldMs?: number;
   updatedAt: string;
   updatedBy: string;
 }
@@ -179,6 +190,9 @@ const TransferRequestSchema = new mongoose.Schema<TransferRequestRecord>({
   username: { type: String, required: true },
   type: { type: String, enum: ['DEPOSIT', 'WITHDRAWAL'], required: true },
   amount: { type: Number, required: true },
+  bonusAmount: { type: Number, default: 0 },
+  bonusPercent: { type: Number, default: 9 },
+  creditedAmount: { type: Number, default: 0 },
   status: { type: String, enum: ['PENDING', 'APPROVED', 'REJECTED'], default: 'PENDING' },
   mobileNumber: { type: String, default: '' },
   accountHolderName: { type: String, default: '' },
@@ -209,6 +223,14 @@ const AuditLogSchema = new mongoose.Schema<AuditLogRecord>({
 const ConfigSchema = new mongoose.Schema<AppConfigRecord>({
   welcomeBonus: { type: Number, required: true },
   placeholderQrUrl: { type: String, required: true },
+  logoUrl: { type: String, default: '' },
+  depositBonusEnabled: { type: Boolean, default: true },
+  depositBonusPercent: { type: Number, default: 9 },
+  minWithdrawalAmount: { type: Number, default: 500 },
+  houseEdgePercent: { type: Number, default: 3 },
+  maxMultiplier: { type: Number, default: 250 },
+  bettingDurationMs: { type: Number, default: 5000 },
+  crashedHoldMs: { type: Number, default: 3500 },
   updatedAt: { type: String, required: true },
   updatedBy: { type: String, required: true },
 });
@@ -243,6 +265,14 @@ let dbState: DatabaseSchema = {
   config: {
     welcomeBonus: Number(process.env.DEFAULT_WELCOME_BONUS) || 500,
     placeholderQrUrl: DEFAULT_QR_IMAGE,
+    logoUrl: '',
+    depositBonusEnabled: true,
+    depositBonusPercent: 9,
+    minWithdrawalAmount: 500,
+    houseEdgePercent: 3,
+    maxMultiplier: 250,
+    bettingDurationMs: 5000,
+    crashedHoldMs: 3500,
     updatedAt: new Date().toISOString(),
     updatedBy: 'system',
   },
@@ -316,6 +346,14 @@ async function initDatabase(): Promise<void> {
       dbState.config = {
         welcomeBonus: configDoc.welcomeBonus,
         placeholderQrUrl: configDoc.placeholderQrUrl,
+        logoUrl: configDoc.logoUrl || '',
+        depositBonusEnabled: configDoc.depositBonusEnabled !== false,
+        depositBonusPercent: configDoc.depositBonusPercent ?? 9,
+        minWithdrawalAmount: configDoc.minWithdrawalAmount ?? 500,
+        houseEdgePercent: configDoc.houseEdgePercent ?? 3,
+        maxMultiplier: configDoc.maxMultiplier ?? 250,
+        bettingDurationMs: configDoc.bettingDurationMs ?? 5000,
+        crashedHoldMs: configDoc.crashedHoldMs ?? 3500,
         updatedAt: configDoc.updatedAt,
         updatedBy: configDoc.updatedBy,
       };
@@ -335,7 +373,17 @@ async function initDatabase(): Promise<void> {
         if (parsed.requests) dbState.requests = parsed.requests;
         if (parsed.auditLogs) dbState.auditLogs = parsed.auditLogs;
         if (parsed.config) {
-          dbState.config = parsed.config;
+          dbState.config = {
+            ...dbState.config,
+            ...parsed.config,
+            depositBonusEnabled: parsed.config.depositBonusEnabled !== false,
+            depositBonusPercent: parsed.config.depositBonusPercent ?? 9,
+            minWithdrawalAmount: parsed.config.minWithdrawalAmount ?? 500,
+            houseEdgePercent: parsed.config.houseEdgePercent ?? 3,
+            maxMultiplier: parsed.config.maxMultiplier ?? 250,
+            bettingDurationMs: parsed.config.bettingDurationMs ?? 5000,
+            crashedHoldMs: parsed.config.crashedHoldMs ?? 3500,
+          };
           // Upgrade any legacy placeholder SVG to the latest 45x45 uploaded slice QR code
           if (
             !dbState.config.placeholderQrUrl ||
@@ -458,6 +506,12 @@ interface LiveGameEngineState {
   crashedHoldMs: number;
   bets: ActiveRoundBet[];
   recentHistory: CrashRoundHistoryItem[];
+  nextRound: {
+    roundId: string;
+    serverSeed: string;
+    serverSeedHash: string;
+    crashPoint: number;
+  };
 }
 
 function generateProvablyFairCrashPoint(): {
@@ -476,16 +530,21 @@ function generateProvablyFairCrashPoint(): {
   const maxVal = Math.pow(2, 52);
   const r = intVal / maxVal;
 
-  // 3% instant crash at 1.00x, otherwise heavy-tailed crash curve capped at 250.00x
-  if (r < 0.03) {
+  // Transparent, auditable crash curve calibrated by admin parameters for future rounds
+  const houseEdgePercent = Math.max(1, Math.min(15, Number(dbState.config.houseEdgePercent) || 3));
+  const houseEdgeRatio = houseEdgePercent / 100;
+  if (r < houseEdgeRatio) {
     return { roundId, serverSeed, serverSeedHash, crashPoint: 1.0 };
   }
-  const rawMultiplier = 0.97 / (1 - r);
-  const clamped = Math.max(1.01, Math.min(250.0, Math.floor(rawMultiplier * 100) / 100));
+  const factor = 1 - houseEdgeRatio;
+  const rawMultiplier = factor / (1 - r);
+  const maxCap = Math.max(10, Math.min(1000, Number(dbState.config.maxMultiplier) || 250.0));
+  const clamped = Math.max(1.01, Math.min(maxCap, Math.floor(rawMultiplier * 100) / 100));
   return { roundId, serverSeed, serverSeedHash, crashPoint: clamped };
 }
 
 const initialSeed = generateProvablyFairCrashPoint();
+const initialNextSeed = generateProvablyFairCrashPoint();
 
 // Pre-populate 10 realistic historical rounds so the history ribbon looks complete immediately
 const initialHistory: CrashRoundHistoryItem[] = [];
@@ -512,6 +571,7 @@ const gameEngine: LiveGameEngineState = {
   crashedHoldMs: 3500,
   bets: [],
   recentHistory: initialHistory,
+  nextRound: initialNextSeed,
 };
 
 async function processSingleCashout(bet: ActiveRoundBet, cashoutMult: number): Promise<void> {
@@ -592,14 +652,17 @@ function startGameLoop(): void {
       }
     } else if (gameEngine.phase === 'CRASHED') {
       if (elapsed >= gameEngine.crashedHoldMs) {
-        const nextSeed = generateProvablyFairCrashPoint();
-        gameEngine.roundId = nextSeed.roundId;
-        gameEngine.crashPoint = nextSeed.crashPoint;
-        gameEngine.serverSeed = nextSeed.serverSeed;
-        gameEngine.serverSeedHash = nextSeed.serverSeedHash;
+        const nextRoundInfo = gameEngine.nextRound;
+        gameEngine.roundId = nextRoundInfo.roundId;
+        gameEngine.crashPoint = nextRoundInfo.crashPoint;
+        gameEngine.serverSeed = nextRoundInfo.serverSeed;
+        gameEngine.serverSeedHash = nextRoundInfo.serverSeedHash;
+        gameEngine.nextRound = generateProvablyFairCrashPoint();
         gameEngine.phase = 'BETTING';
         gameEngine.multiplier = 1.0;
         gameEngine.phaseStartTime = now;
+        gameEngine.bettingDurationMs = Math.max(2000, Number(dbState.config.bettingDurationMs) || 5000);
+        gameEngine.crashedHoldMs = Math.max(1500, Number(dbState.config.crashedHoldMs) || 3500);
         gameEngine.bets = [];
       }
     }
@@ -730,6 +793,10 @@ async function startServer() {
       mongoConfigured: useMongo,
       welcomeBonus: dbState.config.welcomeBonus,
       placeholderQrUrl: dbState.config.placeholderQrUrl || DEFAULT_QR_IMAGE,
+      logoUrl: dbState.config.logoUrl || '',
+      depositBonusEnabled: dbState.config.depositBonusEnabled !== false,
+      depositBonusPercent: dbState.config.depositBonusPercent ?? 9,
+      minWithdrawalAmount: dbState.config.minWithdrawalAmount ?? 500,
       totalUsers: dbState.users.filter((u) => u.role === 'user').length,
     });
   });
@@ -757,6 +824,10 @@ async function startServer() {
       config: {
         welcomeBonus: dbState.config.welcomeBonus,
         placeholderQrUrl: dbState.config.placeholderQrUrl,
+        logoUrl: dbState.config.logoUrl || '',
+        depositBonusEnabled: dbState.config.depositBonusEnabled !== false,
+        depositBonusPercent: dbState.config.depositBonusPercent ?? 9,
+        minWithdrawalAmount: dbState.config.minWithdrawalAmount ?? 500,
       },
     });
   });
@@ -1200,12 +1271,22 @@ async function startServer() {
 
       const dateCode = new Date().toISOString().slice(0, 10).replace(/-/g, '');
       const uniqueSuffix = crypto.randomBytes(3).toString('hex').toUpperCase();
+
+      // Server-side deposit bonus calculation (e.g. 9% bonus configured by admin)
+      const bonusEnabled = dbState.config.depositBonusEnabled !== false;
+      const bonusPercent = bonusEnabled ? Math.max(0, Number(dbState.config.depositBonusPercent) || 9) : 0;
+      const bonusAmount = bonusEnabled && bonusPercent > 0 ? roundCoins(cleanAmount * (bonusPercent / 100)) : 0;
+      const creditedAmount = roundCoins(cleanAmount + bonusAmount);
+
       const requestRecord: TransferRequestRecord = {
         id: `DEP-${dateCode}-${uniqueSuffix}`,
         userId: currentUser.id,
         username: currentUser.username,
         type: 'DEPOSIT',
         amount: cleanAmount,
+        bonusAmount,
+        bonusPercent,
+        creditedAmount,
         status: 'PENDING',
         userNote: (userNote || 'Deposit request').trim().slice(0, 140),
         adminNote: '',
@@ -1217,9 +1298,16 @@ async function startServer() {
       dbState.requests.unshift(requestRecord);
       await persistChange({ request: requestRecord });
 
+      const bonusMsg = bonusAmount > 0
+        ? ` Includes ${bonusPercent}% deposit bonus (+₹${bonusAmount.toFixed(2)}). Total credited upon approval: ₹${creditedAmount.toFixed(2)}.`
+        : '';
+
       res.status(201).json({
         request: requestRecord,
-        message: 'Deposit request submitted (Status: Pending). Balance will be updated after administrator approval.',
+        bonusAmount,
+        bonusPercent,
+        creditedAmount,
+        message: `Deposit request submitted (Status: Pending).${bonusMsg} Balance will be credited after administrator review.`,
       });
     });
   });
@@ -1259,9 +1347,10 @@ async function startServer() {
     const cleanIfsc = (ifscCode || '').trim().toUpperCase();
     const cleanUpi = (upiId || '').trim();
 
-    // 1. Minimum withdrawal amount ₹10
-    if (!Number.isFinite(cleanAmount) || cleanAmount < 10) {
-      res.status(400).json({ error: 'Minimum withdrawal amount is ₹10.00.' });
+    // 1. Minimum withdrawal amount configured by administrator (Server validated)
+    const minWithdrawal = Math.max(1, Number(dbState.config.minWithdrawalAmount) || 500);
+    if (!Number.isFinite(cleanAmount) || cleanAmount < minWithdrawal) {
+      res.status(400).json({ error: `Minimum withdrawal amount is ₹${minWithdrawal.toFixed(2)}.` });
       return;
     }
 
@@ -1639,19 +1728,27 @@ async function startServer() {
       let createdTx: TransactionRecord | undefined;
 
       if (reqRecord.type === 'DEPOSIT' && decision === 'APPROVED') {
-        // Credit balance exactly once upon admin approval
+        // Credit balance exactly once upon admin approval (base deposit + calculated deposit bonus)
+        const baseAmount = reqRecord.amount;
+        const bonusAmount = reqRecord.bonusAmount ?? 0;
+        const totalCredit = roundCoins(reqRecord.creditedAmount ?? (baseAmount + bonusAmount));
         const balanceBefore = targetUser.balance;
-        targetUser.balance = roundCoins(targetUser.balance + reqRecord.amount);
+        targetUser.balance = roundCoins(targetUser.balance + totalCredit);
+
+        const bonusDetails = bonusAmount > 0
+          ? ` (Base: ₹${baseAmount.toFixed(2)} + ${reqRecord.bonusPercent || 9}% Bonus: ₹${bonusAmount.toFixed(2)} = Total Credited: ₹${totalCredit.toFixed(2)})`
+          : ` (Credited: ₹${totalCredit.toFixed(2)})`;
+
         createdTx = {
           id: `tx_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
           userId: targetUser.id,
           username: targetUser.username,
           type: 'DEPOSIT_APPROVED',
-          amount: reqRecord.amount,
+          amount: totalCredit,
           balanceBefore,
           balanceAfter: targetUser.balance,
           referenceId: reqRecord.id,
-          description: `Approved deposit request ${reqRecord.id}`,
+          description: `Approved deposit request ${reqRecord.id}${bonusDetails}`,
           createdAt: nowIso,
         };
         dbState.transactions.unshift(createdTx);
@@ -1702,10 +1799,32 @@ async function startServer() {
 
   app.post('/api/admin/config', requireAdmin, async (req: Request, res: Response) => {
     const adminUser = (req as Request & { currentUser: UserRecord }).currentUser;
-    const { welcomeBonus, placeholderQrUrl, resetDefaultQr } = req.body as {
+    const {
+      welcomeBonus,
+      placeholderQrUrl,
+      resetDefaultQr,
+      logoUrl,
+      resetDefaultLogo,
+      depositBonusEnabled,
+      depositBonusPercent,
+      minWithdrawalAmount,
+      houseEdgePercent,
+      maxMultiplier,
+      bettingDurationMs,
+      crashedHoldMs,
+    } = req.body as {
       welcomeBonus?: number;
       placeholderQrUrl?: string;
       resetDefaultQr?: boolean;
+      logoUrl?: string;
+      resetDefaultLogo?: boolean;
+      depositBonusEnabled?: boolean;
+      depositBonusPercent?: number;
+      minWithdrawalAmount?: number;
+      houseEdgePercent?: number;
+      maxMultiplier?: number;
+      bettingDurationMs?: number;
+      crashedHoldMs?: number;
     };
 
     await withLock(async () => {
@@ -1723,10 +1842,70 @@ async function startServer() {
 
       if (resetDefaultQr) {
         dbState.config.placeholderQrUrl = DEFAULT_QR_IMAGE;
-        changes.push('QR code reset to uploaded QR image');
+        changes.push('QR code reset to default image');
       } else if (placeholderQrUrl !== undefined && placeholderQrUrl.trim().length > 0) {
         dbState.config.placeholderQrUrl = placeholderQrUrl.trim();
         changes.push('QR code updated');
+      }
+
+      // Admin Logo configuration
+      if (resetDefaultLogo) {
+        dbState.config.logoUrl = '';
+        changes.push('Custom logo reset to default game branding');
+      } else if (logoUrl !== undefined) {
+        const cleanLogo = logoUrl.trim();
+        // Validation: verify data URI or URL format and size bounds
+        if (cleanLogo.length > 0 && !cleanLogo.startsWith('data:image/') && !cleanLogo.startsWith('http://') && !cleanLogo.startsWith('https://') && !cleanLogo.startsWith('/')) {
+          res.status(400).json({ error: 'Invalid logo format. Please provide a valid image data URI or URL.' });
+          return;
+        }
+        dbState.config.logoUrl = cleanLogo;
+        changes.push(cleanLogo ? 'Game logo updated' : 'Game logo cleared');
+      }
+
+      // Deposit bonus configuration
+      if (depositBonusEnabled !== undefined) {
+        const val = Boolean(depositBonusEnabled);
+        changes.push(`depositBonusEnabled: ${dbState.config.depositBonusEnabled} -> ${val}`);
+        dbState.config.depositBonusEnabled = val;
+      }
+
+      if (depositBonusPercent !== undefined) {
+        const cleanPercent = Math.max(0, Math.min(100, Number(depositBonusPercent)));
+        changes.push(`depositBonusPercent: ${dbState.config.depositBonusPercent}% -> ${cleanPercent}%`);
+        dbState.config.depositBonusPercent = cleanPercent;
+      }
+
+      // Minimum withdrawal configuration
+      if (minWithdrawalAmount !== undefined) {
+        const cleanMin = roundCoins(Math.max(1, Math.min(100000, Number(minWithdrawalAmount))));
+        changes.push(`minWithdrawalAmount: ₹${dbState.config.minWithdrawalAmount} -> ₹${cleanMin}`);
+        dbState.config.minWithdrawalAmount = cleanMin;
+      }
+
+      // Fair game engine future parameters
+      if (houseEdgePercent !== undefined) {
+        const cleanEdge = Math.max(1, Math.min(15, Number(houseEdgePercent)));
+        changes.push(`houseEdgePercent: ${dbState.config.houseEdgePercent}% -> ${cleanEdge}%`);
+        dbState.config.houseEdgePercent = cleanEdge;
+      }
+
+      if (maxMultiplier !== undefined) {
+        const cleanCap = Math.max(10, Math.min(1000, Number(maxMultiplier)));
+        changes.push(`maxMultiplier: ${dbState.config.maxMultiplier}x -> ${cleanCap}x`);
+        dbState.config.maxMultiplier = cleanCap;
+      }
+
+      if (bettingDurationMs !== undefined) {
+        const cleanDuration = Math.max(2000, Math.min(15000, Number(bettingDurationMs)));
+        changes.push(`bettingDurationMs: ${dbState.config.bettingDurationMs}ms -> ${cleanDuration}ms`);
+        dbState.config.bettingDurationMs = cleanDuration;
+      }
+
+      if (crashedHoldMs !== undefined) {
+        const cleanHold = Math.max(1500, Math.min(10000, Number(crashedHoldMs)));
+        changes.push(`crashedHoldMs: ${dbState.config.crashedHoldMs}ms -> ${cleanHold}ms`);
+        dbState.config.crashedHoldMs = cleanHold;
       }
 
       const nowIso = new Date().toISOString();
@@ -1749,6 +1928,93 @@ async function startServer() {
       res.json({
         success: true,
         config: dbState.config,
+      });
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // ADMIN LIVE FAIR GAME ENGINE & FLIGHT CONTROLS
+  // --------------------------------------------------------------------------
+  app.get('/api/admin/game-status', requireAdmin, (_req: Request, res: Response) => {
+    const now = Date.now();
+    const elapsed = now - gameEngine.phaseStartTime;
+    const countdownMs =
+      gameEngine.phase === 'BETTING' ? Math.max(0, gameEngine.bettingDurationMs - elapsed) : 0;
+
+    res.json({
+      roundId: gameEngine.roundId,
+      phase: gameEngine.phase,
+      statusLabel:
+        gameEngine.phase === 'BETTING' ? 'Waiting' : gameEngine.phase === 'FLYING' ? 'Flying' : 'Crashed',
+      multiplier: gameEngine.multiplier,
+      crashPoint: gameEngine.crashPoint,
+      countdownMs,
+      activeBetsCount: gameEngine.bets.length,
+      totalBetPool: roundCoins(gameEngine.bets.reduce((acc, b) => acc + b.amount, 0)),
+      serverSeedHash: gameEngine.serverSeedHash,
+      serverSeed: gameEngine.phase === 'CRASHED' ? gameEngine.serverSeed : undefined,
+      nextRound: {
+        roundId: gameEngine.nextRound.roundId,
+        crashPoint: gameEngine.nextRound.crashPoint,
+        serverSeedHash: gameEngine.nextRound.serverSeedHash,
+      },
+      config: {
+        houseEdgePercent: Number(dbState.config.houseEdgePercent) || 3,
+        maxMultiplier: Number(dbState.config.maxMultiplier) || 250,
+        bettingDurationMs: Number(dbState.config.bettingDurationMs) || 5000,
+        crashedHoldMs: Number(dbState.config.crashedHoldMs) || 3500,
+      },
+      recentHistory: gameEngine.recentHistory.slice(0, 15),
+    });
+  });
+
+  app.post('/api/admin/flight/crash', requireAdmin, async (req: Request, res: Response) => {
+    const adminUser = (req as Request & { currentUser: UserRecord }).currentUser;
+    await withLock(async () => {
+      // Synchronized protection: only allow crashing when flight is actively in progress
+      if (gameEngine.phase !== 'FLYING') {
+        res.status(400).json({
+          error: `Cannot end flight: round is currently ${gameEngine.phase.toLowerCase()} (only active FLYING rounds can be ended).`,
+          phase: gameEngine.phase,
+        });
+        return;
+      }
+
+      const crashMult = Math.max(1.0, gameEngine.multiplier);
+      gameEngine.crashPoint = crashMult;
+      gameEngine.multiplier = crashMult;
+      gameEngine.phase = 'CRASHED';
+      gameEngine.phaseStartTime = Date.now();
+
+      const completedAt = new Date().toISOString();
+      gameEngine.recentHistory.unshift({
+        roundId: gameEngine.roundId,
+        crashPoint: crashMult,
+        serverSeedHash: gameEngine.serverSeedHash,
+        serverSeed: gameEngine.serverSeed,
+        completedAt,
+      });
+      if (gameEngine.recentHistory.length > 20) {
+        gameEngine.recentHistory.pop();
+      }
+
+      const audit: AuditLogRecord = {
+        id: `aud_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+        adminId: adminUser.id,
+        adminUsername: adminUser.username,
+        action: 'ADMIN_END_FLIGHT',
+        targetUsername: null,
+        details: `Administrator manually ended flight for round ${gameEngine.roundId} at ${crashMult.toFixed(2)}x.`,
+        createdAt: completedAt,
+      };
+      dbState.auditLogs.unshift(audit);
+      await persistChange({ auditLog: audit });
+
+      res.json({
+        success: true,
+        roundId: gameEngine.roundId,
+        crashedAtMultiplier: crashMult,
+        phase: gameEngine.phase,
       });
     });
   });

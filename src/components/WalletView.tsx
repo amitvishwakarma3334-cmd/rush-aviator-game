@@ -13,6 +13,7 @@ import {
 import type { AppConfigRecord, TransactionRecord, TransferRequestRecord, User } from '../types';
 import { UPLOADED_QR_DATA_URI } from '../utils/qrImage';
 import { apiFetch } from '../utils/api';
+import { soundFx } from '../utils/sound';
 
 interface WalletViewProps {
   user: User | null;
@@ -33,6 +34,9 @@ export const WalletView: React.FC<WalletViewProps> = ({
   const [config, setConfig] = useState<AppConfigRecord>({
     welcomeBonus: 500,
     placeholderQrUrl: UPLOADED_QR_DATA_URI,
+    depositBonusEnabled: true,
+    depositBonusPercent: 9,
+    minWithdrawalAmount: 500,
   });
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
   const [requests, setRequests] = useState<TransferRequestRecord[]>([]);
@@ -67,10 +71,15 @@ export const WalletView: React.FC<WalletViewProps> = ({
       const sysRes = await apiFetch('/api/system/status');
       if (sysRes.ok) {
         const sysData = await sysRes.json();
-        setConfig({
+        setConfig((prev) => ({
+          ...prev,
           welcomeBonus: sysData.welcomeBonus ?? 500,
           placeholderQrUrl: sysData.placeholderQrUrl || UPLOADED_QR_DATA_URI,
-        });
+          logoUrl: sysData.logoUrl || '',
+          depositBonusEnabled: sysData.depositBonusEnabled !== false,
+          depositBonusPercent: sysData.depositBonusPercent ?? 9,
+          minWithdrawalAmount: sysData.minWithdrawalAmount ?? 500,
+        }));
       }
 
       if (!user) {
@@ -84,10 +93,15 @@ export const WalletView: React.FC<WalletViewProps> = ({
       setBalance(data.balance);
       onBalanceChange(data.balance);
       if (data.config) {
-        setConfig({
-          welcomeBonus: data.config.welcomeBonus,
+        setConfig((prev) => ({
+          ...prev,
+          welcomeBonus: data.config.welcomeBonus ?? 500,
           placeholderQrUrl: data.config.placeholderQrUrl || UPLOADED_QR_DATA_URI,
-        });
+          logoUrl: data.config.logoUrl || '',
+          depositBonusEnabled: data.config.depositBonusEnabled !== false,
+          depositBonusPercent: data.config.depositBonusPercent ?? 9,
+          minWithdrawalAmount: data.config.minWithdrawalAmount ?? 500,
+        }));
       }
       setTransactions(data.transactions || []);
       setRequests(data.requests || []);
@@ -136,9 +150,14 @@ export const WalletView: React.FC<WalletViewProps> = ({
           message: data.error || 'Could not submit deposit request.',
         });
       } else {
+        // Play clear deposit submission success audio
+        soundFx.playDepositSuccess();
+        const bonusMsg = data.bonusAmount > 0
+          ? ` (${data.bonusPercent || 9}% bonus: +₹${Number(data.bonusAmount).toFixed(2)}, total credited upon approval: ₹${Number(data.creditedAmount).toFixed(2)})`
+          : '';
         setDepositFeedback({
           type: 'success',
-          message: `Deposit request submitted. Reference ID: ${data.request.id} · Status: Pending`,
+          message: `Deposit request submitted. Reference ID: ${data.request.id} · Status: Pending${bonusMsg}`,
         });
         setDepositNote('');
         await fetchWalletData();
@@ -161,10 +180,11 @@ export const WalletView: React.FC<WalletViewProps> = ({
     }
     setWithdrawFeedback(null);
     const num = Number(withdrawAmount);
-    if (!Number.isFinite(num) || num < 10) {
+    const minW = Math.max(1, config.minWithdrawalAmount || 500);
+    if (!Number.isFinite(num) || num < minW) {
       setWithdrawFeedback({
         type: 'error',
-        message: 'Minimum withdrawal amount is ₹10.00.',
+        message: `Minimum withdrawal amount is ₹${minW.toFixed(2)}.`,
       });
       return;
     }
@@ -244,6 +264,8 @@ export const WalletView: React.FC<WalletViewProps> = ({
           message: data.error || 'Could not submit withdrawal request.',
         });
       } else {
+        // Play clear banking withdrawal confirmation audio
+        soundFx.playWithdrawalRequest();
         setWithdrawFeedback({
           type: 'success',
           message: `Withdrawal request submitted successfully. Reference ID: ${data.request.id} · Status: Pending Review`,
@@ -418,6 +440,24 @@ export const WalletView: React.FC<WalletViewProps> = ({
                     className="w-full px-3.5 py-2.5 rounded-xl bg-[#0A0D14] border border-slate-700 text-white font-mono-tabular text-sm focus:outline-none focus:border-rose-500"
                     placeholder="Enter amount (₹1 - ₹50,000)"
                   />
+
+                  {/* Real-time Deposit Bonus Breakdown (9% Server Calculated) */}
+                  {config.depositBonusEnabled !== false && (
+                    <div className="p-3 rounded-xl bg-gradient-to-r from-rose-950/40 via-purple-950/20 to-amber-950/40 border border-rose-800/50 text-xs space-y-1 mt-2.5">
+                      <div className="flex items-center justify-between text-rose-300 font-semibold">
+                        <span>🔥 {config.depositBonusPercent ?? 9}% Instant Deposit Bonus</span>
+                        <span className="font-mono-tabular text-amber-300 font-bold">
+                          +₹{(Math.round((Math.max(0, Number(depositAmount || 0)) * ((config.depositBonusPercent ?? 9) / 100)) * 100) / 100).toFixed(2)} Bonus
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-slate-300 font-mono-tabular text-[11px] pt-1 border-t border-rose-900/40">
+                        <span>Base Amount: ₹{Math.max(0, Number(depositAmount || 0)).toFixed(2)}</span>
+                        <span className="text-emerald-400 font-bold">
+                          Total Credited: ₹{(Math.max(0, Number(depositAmount || 0)) + Math.round((Math.max(0, Number(depositAmount || 0)) * ((config.depositBonusPercent ?? 9) / 100)) * 100) / 100).toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -478,7 +518,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
                 Withdraw Funds
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Enter your withdrawal amount (minimum ₹10.00), mobile number, and verified bank account details.
+                Enter your withdrawal amount (minimum ₹{config.minWithdrawalAmount || 500}.00), mobile number, and verified bank account details.
               </p>
             </div>
 
@@ -487,14 +527,19 @@ export const WalletView: React.FC<WalletViewProps> = ({
               <div>
                 <div className="flex items-center justify-between text-xs mb-1.5">
                   <span className="font-medium text-slate-300">
-                    Withdrawal Amount (Minimum ₹10) *
+                    Withdrawal Amount (Minimum ₹{config.minWithdrawalAmount || 500}) *
                   </span>
                   <span className="text-slate-400 font-mono-tabular">
                     Balance: ₹{balance.toFixed(2)}
                   </span>
                 </div>
                 <div className="flex flex-wrap gap-2 mb-2.5">
-                  {[10, 50, 100, 250, 500].map((preset) => (
+                  {[
+                    config.minWithdrawalAmount || 500,
+                    (config.minWithdrawalAmount || 500) * 2,
+                    2000,
+                    5000,
+                  ].map((preset) => (
                     <button
                       key={preset}
                       type="button"
@@ -518,13 +563,13 @@ export const WalletView: React.FC<WalletViewProps> = ({
                 </div>
                 <input
                   type="number"
-                  min="10"
+                  min={config.minWithdrawalAmount || 500}
                   step="0.01"
                   required
                   value={withdrawAmount}
                   onChange={(e) => setWithdrawAmount(e.target.value)}
                   className="w-full px-3.5 py-2.5 rounded-xl bg-[#0A0D14] border border-slate-700 text-white font-mono-tabular text-sm focus:outline-none focus:border-rose-500"
-                  placeholder="Minimum ₹10.00"
+                  placeholder={`Minimum ₹${config.minWithdrawalAmount || 500}.00`}
                 />
               </div>
 
@@ -704,7 +749,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
               </h3>
               <div className="space-y-3 text-xs text-slate-300 leading-relaxed">
                 <p>
-                  <strong className="text-white">01. Minimum Limit:</strong> Withdrawal requests require a minimum amount of ₹10.00 and cannot exceed your available balance.
+                  <strong className="text-white">01. Minimum Limit:</strong> Withdrawal requests require a minimum amount of ₹{config.minWithdrawalAmount || 500}.00 and cannot exceed your available balance.
                 </p>
                 <p>
                   <strong className="text-white">02. Verified Banking Details:</strong> Please provide your active mobile number, Account Holder Name, Bank Account Number, and valid IFSC Code.
@@ -786,6 +831,14 @@ export const WalletView: React.FC<WalletViewProps> = ({
                       ₹{req.amount.toFixed(2)}
                     </span>
                   </div>
+
+                  {/* Deposit Bonus and Total Credited Breakdown */}
+                  {req.type === 'DEPOSIT' && req.bonusAmount !== undefined && req.bonusAmount > 0 && (
+                    <div className="flex items-center justify-between text-[11px] font-mono-tabular text-emerald-400 pt-0.5">
+                      <span>+{req.bonusPercent ?? 9}% Deposit Bonus:</span>
+                      <span>+₹{req.bonusAmount.toFixed(2)} (Total: ₹{(req.creditedAmount ?? (req.amount + req.bonusAmount)).toFixed(2)})</span>
+                    </div>
+                  )}
 
                   {/* Bank & Payment Details with Masking */}
                   {(req.accountHolderName || req.maskedAccountNumber || req.ifscCode || req.mobileNumber || req.upiId) && (

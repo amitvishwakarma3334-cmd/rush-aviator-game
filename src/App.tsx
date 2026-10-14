@@ -383,16 +383,23 @@ export default function App() {
       <div className="min-h-screen flex flex-col bg-[#0B0E14] text-slate-100">
         {/* TOP BAR CONTRACT: Strictly 1 row, 3 zones separated by gap-8 */}
         <header className="flex items-center justify-between gap-8 px-6 py-4 border-b border-slate-800/90 bg-[#0E121B]">
-        {/* Zone 1: Single text element wordmark */}
+        {/* Zone 1: Brand Wordmark or Admin-Configured Logo */}
         <a
           href="#arena"
           onClick={(e) => {
             e.preventDefault();
             setActiveView('game');
           }}
-          className="text-lg font-display font-extrabold tracking-tight text-white whitespace-nowrap shrink-0"
+          className="flex items-center gap-2.5 text-lg font-display font-extrabold tracking-tight text-white whitespace-nowrap shrink-0 cursor-pointer"
         >
-          AVIATOR
+          {systemStatus?.logoUrl ? (
+            <img
+              src={systemStatus.logoUrl}
+              alt="Game Logo"
+              className="h-8 max-w-[140px] object-contain rounded"
+            />
+          ) : null}
+          <span>AVIATOR</span>
         </a>
 
         {/* Zone 2: 5 concise single-line text navigation links */}
@@ -547,6 +554,17 @@ export default function App() {
             onAdminAuthenticated={(adminUser) => {
               setUser(adminUser);
               setActiveView('admin');
+            }}
+            onConfigUpdated={(newCfg) => {
+              setSystemStatus((prev) => ({
+                ...(prev || {
+                  storageMode: 'Local',
+                  mongoConfigured: false,
+                  welcomeBonus: 500,
+                  totalUsers: 0,
+                }),
+                ...newCfg,
+              }));
             }}
           />
         ) : activeView === 'wallet' || activeView === 'deposit' || activeView === 'withdraw' ? (
@@ -737,8 +755,8 @@ export default function App() {
             <div className="lg:col-span-8 space-y-5">
               <AviatorCanvas gameState={gameState} />
 
-              {/* Dynamic Betting Slots Cockpit (Doubled to 2 Slots) */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Dynamic Betting Slots Cockpit: Side-by-Side on all screen sizes */}
+              <div className="grid grid-cols-2 gap-2 sm:gap-4">
                 {DYNAMIC_BETTING_SLOTS.map((slot) => {
                   const slotState = slotStates[slot.id] || {
                     amount: slot.defaultAmount,
@@ -755,62 +773,65 @@ export default function App() {
                   return (
                     <div
                       key={slot.id}
-                      className="bg-[#121723] border border-slate-800 rounded-2xl p-4 sm:p-5 flex flex-col justify-between space-y-4"
+                      className="bg-[#121723] border border-slate-800 rounded-xl sm:rounded-2xl p-2.5 sm:p-5 flex flex-col justify-between space-y-2 sm:space-y-4 min-w-0"
                     >
                       {/* Slot Header */}
-                      <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
-                        <div className="flex items-center gap-2">
-                          <span className="px-2 py-0.5 rounded text-[11px] font-bold font-mono-tabular bg-slate-800 text-slate-200 border border-slate-700">
+                      <div className="flex items-center justify-between pb-2 sm:pb-3 border-b border-slate-800/80 gap-1">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="px-1.5 py-0.5 rounded text-[9px] sm:text-[11px] font-bold font-mono-tabular bg-slate-800 text-slate-200 border border-slate-700 shrink-0">
                             {slot.badge}
                           </span>
-                          <span className="text-xs font-bold text-white tracking-wide">
+                          <span className="text-[10px] sm:text-xs font-bold text-white tracking-wide truncate">
                             {slot.label}
                           </span>
                         </div>
 
-                        <div>
+                        <div className="shrink-0 text-right">
                           {slotBet ? (
                             slotBet.cashedOut ? (
-                              <span className="text-[11px] font-bold text-emerald-400">
+                              <span className="text-[9px] sm:text-[11px] font-bold text-emerald-400">
                                 Cashed Out
                               </span>
                             ) : gameState.phase === 'FLYING' ? (
-                              <span className="text-[11px] font-bold text-amber-400 animate-pulse">
-                                Active Flight
+                              <span className="text-[9px] sm:text-[11px] font-bold text-amber-400 animate-pulse">
+                                Flying
                               </span>
                             ) : (
-                              <span className="text-[11px] font-bold text-emerald-300">
-                                Bet Confirmed
+                              <span className="text-[9px] sm:text-[11px] font-bold text-emerald-300">
+                                Placed
                               </span>
                             )
                           ) : (
-                            <span className="text-[11px] text-slate-400 font-mono-tabular">
-                              Balance: ₹{user.balance.toFixed(2)}
+                            <span className="text-[9px] sm:text-[11px] text-slate-400 font-mono-tabular truncate block">
+                              ₹{user.balance.toFixed(2)}
                             </span>
                           )}
                         </div>
                       </div>
 
                       {/* Controls: Amount Input + Presets */}
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="number"
-                            min="1"
-                            max="10000"
-                            step="1"
-                            disabled={Boolean(slotBet) || slotState.isPending}
-                            value={slotState.amount}
-                            onChange={(e) =>
-                              setSlotStates((prev) => ({
-                                ...prev,
-                                [slot.id]: { ...prev[slot.id], amount: e.target.value, error: null },
-                              }))
-                            }
-                            className="w-28 px-3 py-2 rounded-xl bg-[#0A0D14] border border-slate-700 text-white font-mono-tabular font-bold text-sm focus:outline-none focus:border-rose-500 disabled:opacity-60"
-                          />
-                          <div className="flex flex-wrap gap-1">
-                            {[10, 25, 50, 100, 250].map((preset) => (
+                      <div className="space-y-1.5 sm:space-y-3">
+                        <div>
+                          <div className="relative">
+                            <input
+                              type="number"
+                              min="1"
+                              max="10000"
+                              step="1"
+                              disabled={Boolean(slotBet) || slotState.isPending}
+                              value={slotState.amount}
+                              onChange={(e) =>
+                                setSlotStates((prev) => ({
+                                  ...prev,
+                                  [slot.id]: { ...prev[slot.id], amount: e.target.value, error: null },
+                                }))
+                              }
+                              className="w-full px-2.5 py-1.5 sm:px-3 sm:py-2 rounded-lg sm:rounded-xl bg-[#0A0D14] border border-slate-700 text-white font-mono-tabular font-bold text-xs sm:text-sm focus:outline-none focus:border-rose-500 disabled:opacity-60"
+                            />
+                          </div>
+
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {[10, 50, 100, 250].map((preset) => (
                               <button
                                 key={preset}
                                 type="button"
@@ -825,7 +846,7 @@ export default function App() {
                                     },
                                   }))
                                 }
-                                className={`px-2 py-1.5 rounded-lg text-xs font-mono-tabular font-semibold transition-colors cursor-pointer disabled:opacity-50 ${
+                                className={`px-1.5 py-0.5 sm:px-2 sm:py-1 rounded text-[9px] sm:text-xs font-mono-tabular font-semibold transition-colors cursor-pointer disabled:opacity-50 ${
                                   Number(slotState.amount) === preset
                                     ? 'bg-rose-600 text-white'
                                     : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -847,7 +868,7 @@ export default function App() {
                                   },
                                 }))
                               }
-                              className="px-2 py-1.5 rounded-lg text-xs font-mono-tabular font-semibold bg-slate-800 text-rose-400 hover:bg-slate-700 transition-colors cursor-pointer disabled:opacity-50"
+                              className="px-1.5 py-0.5 sm:px-2 sm:py-1 rounded text-[9px] sm:text-xs font-mono-tabular font-semibold bg-slate-800 text-rose-400 hover:bg-slate-700 transition-colors cursor-pointer disabled:opacity-50"
                             >
                               MAX
                             </button>
@@ -855,8 +876,8 @@ export default function App() {
                         </div>
 
                         {/* Auto-Cashout Switch & Input */}
-                        <div className="flex items-center justify-between pt-2 border-t border-slate-800/60 text-xs">
-                          <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer select-none">
+                        <div className="flex items-center justify-between pt-1.5 sm:pt-2 border-t border-slate-800/60 text-[10px] sm:text-xs gap-1">
+                          <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer select-none truncate">
                             <input
                               type="checkbox"
                               disabled={Boolean(slotBet) || slotState.isPending}
@@ -870,13 +891,13 @@ export default function App() {
                                   },
                                 }))
                               }
-                              className="rounded border-slate-700 bg-slate-900 text-rose-600 focus:ring-rose-500"
+                              className="rounded border-slate-700 bg-slate-900 text-rose-600 focus:ring-rose-500 w-3 h-3 sm:w-3.5 sm:h-3.5"
                             />
-                            <span>Auto Cash Out</span>
+                            <span className="truncate">Auto Cash</span>
                           </label>
 
                           {slotState.autoCashoutEnabled && (
-                            <div className="flex items-center gap-1">
+                            <div className="flex items-center gap-1 shrink-0">
                               <input
                                 type="number"
                                 min="1.10"
@@ -893,9 +914,9 @@ export default function App() {
                                     },
                                   }))
                                 }
-                                className="w-20 px-2 py-1 rounded-lg bg-[#0A0D14] border border-slate-700 text-white font-mono-tabular text-xs focus:outline-none focus:border-rose-500"
+                                className="w-14 sm:w-18 px-1.5 py-0.5 rounded bg-[#0A0D14] border border-slate-700 text-white font-mono-tabular text-[10px] sm:text-xs focus:outline-none focus:border-rose-500"
                               />
-                              <span className="font-mono-tabular text-slate-400">x</span>
+                              <span className="font-mono-tabular text-slate-400 text-[10px] sm:text-xs">x</span>
                             </div>
                           )}
                         </div>
@@ -908,28 +929,28 @@ export default function App() {
                             type="button"
                             disabled={slotState.isPending}
                             onClick={() => handleCashoutSlot(slot.id)}
-                            className="w-full py-4 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-display font-extrabold text-base tracking-tight shadow-lg transition-transform active:scale-[0.99] cursor-pointer flex flex-col items-center justify-center"
+                            className="w-full py-2.5 sm:py-3.5 px-2 sm:px-4 rounded-lg sm:rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-display font-extrabold text-xs sm:text-sm tracking-tight shadow-lg transition-transform active:scale-[0.99] cursor-pointer flex flex-col items-center justify-center leading-tight"
                           >
                             <span>CASH OUT</span>
-                            <span className="text-xs font-mono-tabular font-bold mt-0.5">
+                            <span className="text-[10px] sm:text-xs font-mono-tabular font-bold mt-0.5">
                               ₹{(slotBet.amount * gameState.multiplier).toFixed(2)} ({gameState.multiplier.toFixed(2)}x)
                             </span>
                           </button>
                         ) : slotBet && slotBet.cashedOut ? (
-                          <div className="w-full py-3.5 px-4 rounded-xl bg-emerald-950/60 border border-emerald-700/60 text-emerald-300 flex flex-col items-center justify-center text-center">
-                            <div className="flex items-center gap-1 text-xs font-bold">
-                              <CheckCircle2 className="w-3.5 h-3.5" />
-                              <span>CASHED OUT AT {slotBet.cashoutMultiplier?.toFixed(2)}x</span>
+                          <div className="w-full py-2 sm:py-3 px-2 sm:px-4 rounded-lg sm:rounded-xl bg-emerald-950/60 border border-emerald-700/60 text-emerald-300 flex flex-col items-center justify-center text-center leading-tight">
+                            <div className="flex items-center gap-1 text-[10px] sm:text-xs font-bold truncate">
+                              <CheckCircle2 className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
+                              <span className="truncate">AT {slotBet.cashoutMultiplier?.toFixed(2)}x</span>
                             </div>
-                            <div className="text-xs font-mono-tabular mt-0.5 font-semibold">
+                            <div className="text-[10px] sm:text-xs font-mono-tabular mt-0.5 font-semibold">
                               Won ₹{slotBet.payout?.toFixed(2)}
                             </div>
                           </div>
                         ) : slotBet && gameState.phase === 'BETTING' ? (
-                          <div className="w-full py-3.5 px-4 rounded-xl bg-emerald-950/50 border border-emerald-700/50 text-emerald-300 flex flex-col items-center justify-center text-center">
-                            <span className="text-xs font-bold">BET CONFIRMED</span>
-                            <span className="text-xs font-mono-tabular mt-0.5">
-                              ₹{slotBet.amount.toFixed(2)} locked for takeoff
+                          <div className="w-full py-2 sm:py-3 px-2 sm:px-4 rounded-lg sm:rounded-xl bg-emerald-950/50 border border-emerald-700/50 text-emerald-300 flex flex-col items-center justify-center text-center leading-tight">
+                            <span className="text-[10px] sm:text-xs font-bold">BET CONFIRMED</span>
+                            <span className="text-[10px] sm:text-xs font-mono-tabular mt-0.5">
+                              ₹{slotBet.amount.toFixed(2)}
                             </span>
                           </div>
                         ) : (
@@ -937,19 +958,19 @@ export default function App() {
                             type="button"
                             disabled={gameState.phase !== 'BETTING' || slotState.isPending}
                             onClick={() => handlePlaceSlotBet(slot.id)}
-                            className={`w-full py-4 px-4 rounded-xl font-display font-extrabold text-base tracking-tight transition-all flex flex-col items-center justify-center ${
+                            className={`w-full py-2.5 sm:py-3.5 px-2 sm:px-4 rounded-lg sm:rounded-xl font-display font-extrabold text-xs sm:text-sm tracking-tight transition-all flex flex-col items-center justify-center leading-tight ${
                               gameState.phase === 'BETTING'
                                 ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg cursor-pointer'
                                 : 'bg-slate-800/80 text-slate-400 cursor-not-allowed border border-slate-700'
                             }`}
                           >
                             <span>
-                              {gameState.phase === 'BETTING' ? 'PLACE BET' : 'ROUND IN PROGRESS'}
+                              {gameState.phase === 'BETTING' ? 'PLACE BET' : 'FLYING'}
                             </span>
-                            <span className="text-xs font-mono-tabular font-normal mt-0.5 opacity-90">
+                            <span className="text-[9px] sm:text-xs font-mono-tabular font-normal mt-0.5 opacity-90 truncate">
                               {gameState.phase === 'BETTING'
                                 ? `₹${Number(slotState.amount || 0).toFixed(2)}`
-                                : 'Bets open during countdown'}
+                                : 'Waiting next round'}
                             </span>
                           </button>
                         )}
@@ -958,7 +979,7 @@ export default function App() {
                       {/* Per-Slot Feedback Messages */}
                       {(slotState.error || slotState.success) && (
                         <div
-                          className={`p-2.5 rounded-lg text-[11px] font-medium border ${
+                          className={`p-1.5 sm:p-2 rounded-lg text-[9px] sm:text-[11px] font-medium border truncate ${
                             slotState.error
                               ? 'bg-rose-950/60 border-rose-700/60 text-rose-300'
                               : 'bg-emerald-950/60 border-emerald-700/60 text-emerald-300'

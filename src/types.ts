@@ -81,6 +81,9 @@ export interface TransferRequestRecord {
   username: string;
   type: 'DEPOSIT' | 'WITHDRAWAL';
   amount: number;
+  bonusAmount?: number;
+  bonusPercent?: number;
+  creditedAmount?: number;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   mobileNumber?: string;
   accountHolderName?: string;
@@ -111,6 +114,14 @@ export interface AuditLogRecord {
 export interface AppConfigRecord {
   welcomeBonus: number;
   placeholderQrUrl: string;
+  logoUrl?: string;
+  depositBonusEnabled?: boolean;
+  depositBonusPercent?: number;
+  minWithdrawalAmount?: number;
+  houseEdgePercent?: number;
+  maxMultiplier?: number;
+  bettingDurationMs?: number;
+  crashedHoldMs?: number;
   updatedAt?: string;
   updatedBy?: string;
 }
@@ -120,5 +131,34 @@ export interface SystemStatusResponse {
   mongoConfigured: boolean;
   welcomeBonus: number;
   placeholderQrUrl?: string;
+  logoUrl?: string;
+  depositBonusEnabled?: boolean;
+  depositBonusPercent?: number;
+  minWithdrawalAmount?: number;
   totalUsers: number;
+}
+
+export interface AdminGameStatusResponse {
+  roundId: string;
+  phase: 'BETTING' | 'FLYING' | 'CRASHED';
+  statusLabel: 'Waiting' | 'Flying' | 'Crashed';
+  multiplier: number;
+  crashPoint: number;
+  countdownMs: number;
+  activeBetsCount: number;
+  totalBetPool: number;
+  serverSeedHash: string;
+  serverSeed?: string;
+  nextRound: {
+    roundId: string;
+    crashPoint: number;
+    serverSeedHash: string;
+  };
+  config: {
+    houseEdgePercent: number;
+    maxMultiplier: number;
+    bettingDurationMs: number;
+    crashedHoldMs: number;
+  };
+  recentHistory: CrashRoundHistoryItem[];
 }

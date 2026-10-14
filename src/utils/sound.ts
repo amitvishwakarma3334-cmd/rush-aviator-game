@@ -458,6 +458,87 @@ class SoundController {
     }
   }
 
+  // Deposit Success: Celebratory coin cascade & rich harmonic sparkle
+  public playDepositSuccess(): void {
+    if (this.muted) return;
+    const ctx = this.getContext();
+    if (!ctx || !this.sfxMasterGain) return;
+
+    const now = ctx.currentTime;
+    // C5, E5, G5, C6 uplifting bright arpeggio with warm shimmer
+    const notes = [523.25, 659.25, 783.99, 1046.5];
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      const start = now + idx * 0.055;
+      const duration = 0.36;
+
+      osc.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0.65, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
+
+      osc.connect(gain);
+      gain.connect(this.sfxMasterGain!);
+      osc.start(start);
+      osc.stop(start + duration + 0.02);
+    });
+  }
+
+  // Withdrawal Request: Reassuring, clear banking submission confirmation chime
+  public playWithdrawalRequest(): void {
+    if (this.muted) return;
+    const ctx = this.getContext();
+    if (!ctx || !this.sfxMasterGain) return;
+
+    const now = ctx.currentTime;
+    // Two-tone confident chime: F5 (698.46) -> C6 (1046.50)
+    const tones = [698.46, 1046.5];
+    tones.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      const start = now + idx * 0.09;
+      const duration = 0.30;
+
+      osc.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0.70, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
+
+      osc.connect(gain);
+      gain.connect(this.sfxMasterGain!);
+      osc.start(start);
+      osc.stop(start + duration + 0.02);
+    });
+  }
+
+  // Withdrawal Status Update: Subtle pleasant chime
+  public playWithdrawalStatusUpdate(): void {
+    if (this.muted) return;
+    const ctx = this.getContext();
+    if (!ctx || !this.sfxMasterGain) return;
+
+    const now = ctx.currentTime;
+    // Ascending chime: A5 (880.00) -> D6 (1174.66)
+    const tones = [880.0, 1174.66];
+    tones.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      const start = now + idx * 0.07;
+      const duration = 0.25;
+
+      osc.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0.60, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
+
+      osc.connect(gain);
+      gain.connect(this.sfxMasterGain!);
+      osc.start(start);
+      osc.stop(start + duration + 0.02);
+    });
+  }
+
   // Interactive Test Sound to let user preview current SFX volume level
   public playTestChime(): void {
     if (this.muted) return;

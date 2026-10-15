@@ -128,9 +128,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [bonusInput, setBonusInput] = useState<string>('500');
   const [qrUrlInput, setQrUrlInput] = useState<string>('');
   const [logoUrlInput, setLogoUrlInput] = useState<string>('');
+  const [loadingLogoUrlInput, setLoadingLogoUrlInput] = useState<string>('');
   const [depositBonusEnabled, setDepositBonusEnabled] = useState<boolean>(true);
   const [depositBonusPercentInput, setDepositBonusPercentInput] = useState<string>('9');
   const [minWithdrawalInput, setMinWithdrawalInput] = useState<string>('500');
+  const [referralBonusInput, setReferralBonusInput] = useState<string>('50');
   const [houseEdgeInput, setHouseEdgeInput] = useState<string>('3');
   const [maxMultiplierInput, setMaxMultiplierInput] = useState<string>('250');
   const [bettingDurationInput, setBettingDurationInput] = useState<string>('5000');
@@ -165,9 +167,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         setBonusInput(String(data.config.welcomeBonus));
         setQrUrlInput(data.config.placeholderQrUrl || UPLOADED_QR_DATA_URI);
         setLogoUrlInput(data.config.logoUrl || '');
+        setLoadingLogoUrlInput(data.config.loadingLogoUrl || '');
         setDepositBonusEnabled(data.config.depositBonusEnabled !== false);
         setDepositBonusPercentInput(String(data.config.depositBonusPercent ?? 9));
         setMinWithdrawalInput(String(data.config.minWithdrawalAmount ?? 500));
+        setReferralBonusInput(String(data.config.referralBonus ?? 50));
         setHouseEdgeInput(String(data.config.houseEdgePercent ?? 3));
         setMaxMultiplierInput(String(data.config.maxMultiplier ?? 250));
         setBettingDurationInput(String(data.config.bettingDurationMs ?? 5000));
@@ -206,7 +210,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }
     };
     fetchStatus();
-    const interval = setInterval(fetchStatus, 800);
+    const interval = setInterval(fetchStatus, 250);
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -353,7 +357,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   const handleSaveConfig = async (
-    options?: { resetDefaultQr?: boolean; resetDefaultLogo?: boolean } | boolean
+    options?: { resetDefaultQr?: boolean; resetDefaultLogo?: boolean; resetDefaultLoadingLogo?: boolean } | boolean
   ) => {
     const opts = typeof options === 'boolean' ? { resetDefaultQr: options } : options || {};
     setConfigSaving(true);
@@ -368,9 +372,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           resetDefaultQr: opts.resetDefaultQr,
           logoUrl: logoUrlInput,
           resetDefaultLogo: opts.resetDefaultLogo,
+          loadingLogoUrl: loadingLogoUrlInput,
+          resetDefaultLoadingLogo: opts.resetDefaultLoadingLogo,
           depositBonusEnabled,
           depositBonusPercent: Number(depositBonusPercentInput),
           minWithdrawalAmount: Number(minWithdrawalInput),
+          referralBonus: Number(referralBonusInput),
           houseEdgePercent: Number(houseEdgeInput),
           maxMultiplier: Number(maxMultiplierInput),
           bettingDurationMs: Number(bettingDurationInput),
@@ -386,9 +393,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         setBonusInput(String(data.config.welcomeBonus));
         setQrUrlInput(data.config.placeholderQrUrl);
         setLogoUrlInput(data.config.logoUrl || '');
+        setLoadingLogoUrlInput(data.config.loadingLogoUrl || '');
         setDepositBonusEnabled(data.config.depositBonusEnabled !== false);
         setDepositBonusPercentInput(String(data.config.depositBonusPercent ?? 9));
         setMinWithdrawalInput(String(data.config.minWithdrawalAmount ?? 500));
+        setReferralBonusInput(String(data.config.referralBonus ?? 50));
         setHouseEdgeInput(String(data.config.houseEdgePercent ?? 3));
         setMaxMultiplierInput(String(data.config.maxMultiplier ?? 250));
         setBettingDurationInput(String(data.config.bettingDurationMs ?? 5000));
@@ -399,6 +408,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             ? 'Deposit QR code restored to default image.'
             : opts.resetDefaultLogo
             ? 'Game logo restored to default branding.'
+            : opts.resetDefaultLoadingLogo
+            ? 'Loading screen logo restored to default branding.'
             : 'Administrator settings saved permanently to database.',
         });
         await fetchAdminOverview(searchQuery);
@@ -443,6 +454,45 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         setActionBanner({
           type: 'error',
           text: 'Failed to upload logo image file.',
+        });
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleLoadingLogoFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      setActionBanner({
+        type: 'error',
+        text: 'Please select an image file smaller than 10 MB.',
+      });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUri = reader.result as string;
+      setLoadingLogoUrlInput(dataUri);
+      try {
+        const res = await apiFetch('/api/admin/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ loadingLogoUrl: dataUri }),
+        });
+        const data = await res.json();
+        if (res.ok && data.config) {
+          setConfig(data.config);
+          onConfigUpdated?.(data.config);
+          setActionBanner({
+            type: 'success',
+            text: 'New Loading Screen Logo uploaded and saved permanently in the database.',
+          });
+        }
+      } catch {
+        setActionBanner({
+          type: 'error',
+          text: 'Failed to upload loading logo image file.',
         });
       }
     };
@@ -1428,6 +1478,53 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               </div>
 
+              {/* SECTION 1B: LOADING SCREEN LOGO */}
+              <div className="p-4 rounded-xl bg-[#0A0D14] border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                      <Image className="w-3.5 h-3.5 text-rose-400" />
+                      <span>Loading Screen Logo</span>
+                    </h3>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Upload or specify a custom logo image for the splash/loading screen.
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <input
+                    type="text"
+                    value={loadingLogoUrlInput}
+                    onChange={(e) => setLoadingLogoUrlInput(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#121723] border border-slate-700 text-white text-xs font-mono-tabular focus:outline-none focus:border-rose-500"
+                    placeholder="Enter image URL or upload image file below"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                  <label className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 transition-colors cursor-pointer">
+                    <Upload className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Upload & Save Loading Logo File</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleLoadingLogoFileUpload}
+                      className="hidden"
+                    />
+                  </label>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSaveConfig({ resetDefaultLoadingLogo: true })}
+                    disabled={configSaving}
+                    className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 transition-colors cursor-pointer"
+                  >
+                    Restore Default Loading Logo
+                  </button>
+                </div>
+              </div>
+
               {/* SECTION 2: DEPOSIT BONUS */}
               <div className="p-4 rounded-xl bg-[#0A0D14] border border-slate-800 space-y-3">
                 <div>
@@ -1479,8 +1576,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 )}
               </div>
 
-              {/* SECTION 3: MINIMUM WITHDRAWAL & WELCOME BONUS */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* SECTION 3: FINANCIAL CONTROLS (MIN WITHDRAWAL, WELCOME BONUS & REFERRAL REWARD) */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="p-4 rounded-xl bg-[#0A0D14] border border-slate-800 space-y-2">
                   <label className="block text-xs font-bold text-white uppercase tracking-wider">
                     Minimum Withdrawal (₹)
@@ -1501,10 +1598,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                 <div className="p-4 rounded-xl bg-[#0A0D14] border border-slate-800 space-y-2">
                   <label className="block text-xs font-bold text-white uppercase tracking-wider">
-                    New Account Welcome Bonus (₹)
+                    Welcome Bonus (₹)
                   </label>
                   <p className="text-[11px] text-slate-400">
-                    Credited automatically once upon registration.
+                    Credited automatically once upon player registration.
                   </p>
                   <input
                     type="number"
@@ -1513,6 +1610,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     step="1"
                     value={bonusInput}
                     onChange={(e) => setBonusInput(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#121723] border border-slate-700 text-white font-mono-tabular text-sm focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+
+                <div className="p-4 rounded-xl bg-[#0A0D14] border border-slate-800 space-y-2">
+                  <label className="block text-xs font-bold text-white uppercase tracking-wider">
+                    Referral Reward (₹)
+                  </label>
+                  <p className="text-[11px] text-slate-400">
+                    Reward credited per verified invited player signup.
+                  </p>
+                  <input
+                    type="number"
+                    min="0"
+                    max="50000"
+                    step="1"
+                    value={referralBonusInput}
+                    onChange={(e) => setReferralBonusInput(e.target.value)}
                     className="w-full px-3.5 py-2.5 rounded-xl bg-[#121723] border border-slate-700 text-white font-mono-tabular text-sm focus:outline-none focus:border-rose-500"
                   />
                 </div>
@@ -1589,7 +1704,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </p>
               </div>
 
-              <div className="my-5 p-4 rounded-xl border border-slate-800 bg-[#0A0D14] w-full flex items-center justify-center min-h-[90px]">
+              <div className="my-4 p-4 rounded-xl border border-slate-800 bg-[#0A0D14] w-full flex items-center justify-center min-h-[90px]">
                 {logoUrlInput ? (
                   <img
                     src={logoUrlInput}
@@ -1606,6 +1721,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
               <div className="text-xs text-slate-500">
                 {logoUrlInput ? 'Custom logo active' : 'Using default branding wordmark'}
+              </div>
+            </div>
+
+            {/* Live Loading Logo Preview Card */}
+            <div className="bg-[#121723] border border-slate-800 rounded-2xl p-6 flex flex-col items-center justify-between text-center">
+              <div>
+                <div className="text-xs font-semibold text-slate-400 mb-1">
+                  ACTIVE LOADING LOGO PREVIEW
+                </div>
+                <p className="text-xs text-slate-500">
+                  Rendered on the initial game splash loading screen
+                </p>
+              </div>
+
+              <div className="my-4 p-4 rounded-xl border border-slate-800 bg-[#0A0D14] w-full flex items-center justify-center min-h-[90px]">
+                {loadingLogoUrlInput ? (
+                  <img
+                    src={loadingLogoUrlInput}
+                    alt="Active Loading Screen Logo Preview"
+                    className="max-h-16 max-w-[200px] object-contain mx-auto rounded"
+                  />
+                ) : (
+                  <div className="flex items-center gap-2 text-slate-400 text-xs font-mono-tabular">
+                    <span className="text-lg font-display font-extrabold text-rose-500">AVIATOR</span>
+                    <span className="text-[10px] text-slate-500">(Default Splash Logo)</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="text-xs text-slate-500">
+                {loadingLogoUrlInput ? 'Custom loading logo active' : 'Using default splash branding'}
               </div>
             </div>
 

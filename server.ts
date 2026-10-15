@@ -27,6 +27,21 @@ export interface UserRecord {
   status: 'active' | 'suspended';
   balance: number;
   welcomeBonusAwarded: boolean;
+  referralCode: string;
+  referredBy?: string | null;
+  referralCount: number;
+  referralEarnings: number;
+  createdAt: string;
+}
+
+export interface ReferralRecord {
+  id: string;
+  referrerId: string;
+  referrerUsername: string;
+  referredUserId: string;
+  referredUsername: string;
+  rewardAmount: number;
+  status: 'COMPLETED';
   createdAt: string;
 }
 
@@ -39,9 +54,11 @@ export interface TransactionRecord {
     | 'GAME_BET'
     | 'GAME_WIN'
     | 'DEPOSIT_APPROVED'
+    | 'DEPOSIT_BONUS'
     | 'WITHDRAWAL_RESERVE'
     | 'WITHDRAWAL_REFUND'
-    | 'ADMIN_ADJUSTMENT';
+    | 'ADMIN_ADJUSTMENT'
+    | 'REFERRAL_REWARD';
   amount: number; // positive for credit, negative for debit
   balanceBefore: number;
   balanceAfter: number;
@@ -90,9 +107,11 @@ export interface AppConfigRecord {
   welcomeBonus: number;
   placeholderQrUrl: string;
   logoUrl?: string;
+  loadingLogoUrl?: string;
   depositBonusEnabled?: boolean;
   depositBonusPercent?: number;
   minWithdrawalAmount?: number;
+  referralBonus?: number;
   houseEdgePercent?: number;
   maxMultiplier?: number;
   bettingDurationMs?: number;
@@ -113,6 +132,7 @@ interface DatabaseSchema {
   transactions: TransactionRecord[];
   requests: TransferRequestRecord[];
   auditLogs: AuditLogRecord[];
+  referrals: ReferralRecord[];
   config: AppConfigRecord;
   sessions: SessionRecord[];
 }
@@ -168,6 +188,10 @@ const UserSchema = new mongoose.Schema<UserRecord>({
   status: { type: String, enum: ['active', 'suspended'], default: 'active' },
   balance: { type: Number, required: true, default: 0 },
   welcomeBonusAwarded: { type: Boolean, default: false },
+  referralCode: { type: String, default: '' },
+  referredBy: { type: String, default: null },
+  referralCount: { type: Number, default: 0 },
+  referralEarnings: { type: Number, default: 0 },
   createdAt: { type: String, required: true },
 });
 
@@ -220,13 +244,26 @@ const AuditLogSchema = new mongoose.Schema<AuditLogRecord>({
   createdAt: { type: String, required: true },
 });
 
+const ReferralSchema = new mongoose.Schema<ReferralRecord>({
+  id: { type: String, required: true, unique: true },
+  referrerId: { type: String, required: true, index: true },
+  referrerUsername: { type: String, required: true },
+  referredUserId: { type: String, required: true, index: true },
+  referredUsername: { type: String, required: true },
+  rewardAmount: { type: Number, required: true },
+  status: { type: String, default: 'COMPLETED' },
+  createdAt: { type: String, required: true },
+});
+
 const ConfigSchema = new mongoose.Schema<AppConfigRecord>({
   welcomeBonus: { type: Number, required: true },
   placeholderQrUrl: { type: String, required: true },
   logoUrl: { type: String, default: '' },
+  loadingLogoUrl: { type: String, default: '' },
   depositBonusEnabled: { type: Boolean, default: true },
   depositBonusPercent: { type: Number, default: 9 },
   minWithdrawalAmount: { type: Number, default: 500 },
+  referralBonus: { type: Number, default: 50 },
   houseEdgePercent: { type: Number, default: 3 },
   maxMultiplier: { type: Number, default: 250 },
   bettingDurationMs: { type: Number, default: 5000 },
@@ -246,6 +283,7 @@ const UserModel = mongoose.models.User || mongoose.model<UserRecord>('User', Use
 const TransactionModel = mongoose.models.Transaction || mongoose.model<TransactionRecord>('Transaction', TransactionSchema);
 const TransferRequestModel = mongoose.models.TransferRequest || mongoose.model<TransferRequestRecord>('TransferRequest', TransferRequestSchema);
 const AuditLogModel = mongoose.models.AuditLog || mongoose.model<AuditLogRecord>('AuditLog', AuditLogSchema);
+const ReferralModel = mongoose.models.Referral || mongoose.model<ReferralRecord>('Referral', ReferralSchema);
 const ConfigModel = mongoose.models.Config || mongoose.model<AppConfigRecord>('Config', ConfigSchema);
 const SessionModel = mongoose.models.Session || mongoose.model<SessionRecord>('Session', SessionSchema);
 
@@ -262,13 +300,16 @@ let dbState: DatabaseSchema = {
   transactions: [],
   requests: [],
   auditLogs: [],
+  referrals: [],
   config: {
     welcomeBonus: Number(process.env.DEFAULT_WELCOME_BONUS) || 500,
     placeholderQrUrl: DEFAULT_QR_IMAGE,
     logoUrl: '',
+    loadingLogoUrl: '',
     depositBonusEnabled: true,
     depositBonusPercent: 9,
     minWithdrawalAmount: 500,
+    referralBonus: 50,
     houseEdgePercent: 3,
     maxMultiplier: 250,
     bettingDurationMs: 5000,
@@ -290,6 +331,7 @@ function withLock<T>(fn: () => Promise<T> | T): Promise<T> {
 
 function normalizeUserRecord(u: Partial<UserRecord>): UserRecord {
   const cleanUsername = (u.username || 'user').trim();
+  const refCode = (u.referralCode || cleanUsername.toUpperCase()).trim();
   return {
     id: u.id || `usr_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
     username: cleanUsername,
@@ -299,6 +341,10 @@ function normalizeUserRecord(u: Partial<UserRecord>): UserRecord {
     status: u.status === 'suspended' ? 'suspended' : 'active',
     balance: roundCoins(Number(u.balance) || 0),
     welcomeBonusAwarded: Boolean(u.welcomeBonusAwarded),
+    referralCode: refCode,
+    referredBy: u.referredBy || null,
+    referralCount: Number(u.referralCount) || 0,
+    referralEarnings: roundCoins(Number(u.referralEarnings) || 0),
     createdAt: u.createdAt || new Date().toISOString(),
   };
 }
@@ -327,11 +373,12 @@ async function initDatabase(): Promise<void> {
 
   if (useMongo) {
     // Load existing Mongo documents into memory state and keep them synced
-    const [users, transactions, requests, auditLogs, configDoc, sessions] = await Promise.all([
+    const [users, transactions, requests, auditLogs, referrals, configDoc, sessions] = await Promise.all([
       UserModel.find().lean(),
       TransactionModel.find().sort({ createdAt: -1 }).limit(1000).lean(),
       TransferRequestModel.find().sort({ createdAt: -1 }).lean(),
       AuditLogModel.find().sort({ createdAt: -1 }).limit(500).lean(),
+      ReferralModel.find().sort({ createdAt: -1 }).lean(),
       ConfigModel.findOne().lean(),
       SessionModel.find().lean(),
     ]);
@@ -340,6 +387,7 @@ async function initDatabase(): Promise<void> {
     dbState.transactions = transactions as TransactionRecord[];
     dbState.requests = requests as TransferRequestRecord[];
     dbState.auditLogs = auditLogs as AuditLogRecord[];
+    dbState.referrals = (referrals as ReferralRecord[]) || [];
     dbState.sessions = sessions as SessionRecord[];
 
     if (configDoc) {
@@ -347,9 +395,11 @@ async function initDatabase(): Promise<void> {
         welcomeBonus: configDoc.welcomeBonus,
         placeholderQrUrl: configDoc.placeholderQrUrl,
         logoUrl: configDoc.logoUrl || '',
+        loadingLogoUrl: configDoc.loadingLogoUrl || '',
         depositBonusEnabled: configDoc.depositBonusEnabled !== false,
         depositBonusPercent: configDoc.depositBonusPercent ?? 9,
         minWithdrawalAmount: configDoc.minWithdrawalAmount ?? 500,
+        referralBonus: configDoc.referralBonus ?? 50,
         houseEdgePercent: configDoc.houseEdgePercent ?? 3,
         maxMultiplier: configDoc.maxMultiplier ?? 250,
         bettingDurationMs: configDoc.bettingDurationMs ?? 5000,
@@ -372,13 +422,16 @@ async function initDatabase(): Promise<void> {
         if (parsed.transactions) dbState.transactions = parsed.transactions;
         if (parsed.requests) dbState.requests = parsed.requests;
         if (parsed.auditLogs) dbState.auditLogs = parsed.auditLogs;
+        if (parsed.referrals) dbState.referrals = parsed.referrals;
         if (parsed.config) {
           dbState.config = {
             ...dbState.config,
             ...parsed.config,
+            loadingLogoUrl: parsed.config.loadingLogoUrl || '',
             depositBonusEnabled: parsed.config.depositBonusEnabled !== false,
             depositBonusPercent: parsed.config.depositBonusPercent ?? 9,
             minWithdrawalAmount: parsed.config.minWithdrawalAmount ?? 500,
+            referralBonus: parsed.config.referralBonus ?? 50,
             houseEdgePercent: parsed.config.houseEdgePercent ?? 3,
             maxMultiplier: parsed.config.maxMultiplier ?? 250,
             bettingDurationMs: parsed.config.bettingDurationMs ?? 5000,
@@ -415,6 +468,9 @@ async function initDatabase(): Promise<void> {
       status: 'active',
       balance: 0,
       welcomeBonusAwarded: false,
+      referralCode: 'ADMIN',
+      referralCount: 0,
+      referralEarnings: 0,
       createdAt: new Date().toISOString(),
     };
     dbState.users.push(newAdmin);
@@ -433,6 +489,7 @@ async function persistChange(options?: {
   transaction?: TransactionRecord;
   request?: TransferRequestRecord;
   auditLog?: AuditLogRecord;
+  referral?: ReferralRecord;
   config?: AppConfigRecord;
   session?: SessionRecord;
   deleteSessionToken?: string;
@@ -455,6 +512,9 @@ async function persistChange(options?: {
   }
   if (options?.auditLog) {
     tasks.push(AuditLogModel.create(options.auditLog));
+  }
+  if (options?.referral) {
+    tasks.push(ReferralModel.create(options.referral));
   }
   if (options?.config) {
     tasks.push(ConfigModel.findOneAndUpdate({}, options.config, { upsert: true }).exec());
@@ -602,70 +662,74 @@ async function processSingleCashout(bet: ActiveRoundBet, cashoutMult: number): P
   await persistChange({ user, transaction: tx });
 }
 
-function startGameLoop(): void {
-  setInterval(() => {
-    const now = Date.now();
-    const elapsed = now - gameEngine.phaseStartTime;
+function syncGameClock(): void {
+  const now = Date.now();
+  const elapsed = now - gameEngine.phaseStartTime;
 
-    if (gameEngine.phase === 'BETTING') {
-      if (elapsed >= gameEngine.bettingDurationMs) {
-        gameEngine.phase = 'FLYING';
-        gameEngine.phaseStartTime = now;
-        gameEngine.multiplier = 1.0;
-      }
-    } else if (gameEngine.phase === 'FLYING') {
-      const tSeconds = elapsed / 1000;
-      // Smooth exponential climb: 1.00x -> ~1.91x in 10s -> ~3.66x in 20s -> etc.
-      const nextMult = Math.floor(Math.exp(0.068 * tSeconds) * 100) / 100;
+  if (gameEngine.phase === 'BETTING') {
+    if (elapsed >= gameEngine.bettingDurationMs) {
+      gameEngine.phase = 'FLYING';
+      gameEngine.phaseStartTime = now;
+      gameEngine.multiplier = 1.0;
+    }
+  } else if (gameEngine.phase === 'FLYING') {
+    const tSeconds = elapsed / 1000;
+    // Smooth exponential climb: 1.00x -> ~1.91x in 10s -> ~3.66x in 20s -> etc.
+    const nextMult = Math.floor(Math.exp(0.068 * tSeconds) * 100) / 100;
 
-      // Check auto-cashouts that triggered before or at crashPoint
-      for (const bet of gameEngine.bets) {
-        if (
-          !bet.cashedOut &&
-          bet.autoCashout !== null &&
-          bet.autoCashout <= gameEngine.crashPoint &&
-          nextMult >= bet.autoCashout
-        ) {
-          const targetMult = bet.autoCashout;
-          withLock(() => processSingleCashout(bet, targetMult)).catch((e) =>
-            console.error('Auto-cashout error:', e)
-          );
-        }
-      }
-
-      if (nextMult >= gameEngine.crashPoint) {
-        gameEngine.multiplier = gameEngine.crashPoint;
-        gameEngine.phase = 'CRASHED';
-        gameEngine.phaseStartTime = now;
-        gameEngine.recentHistory.unshift({
-          roundId: gameEngine.roundId,
-          crashPoint: gameEngine.crashPoint,
-          serverSeedHash: gameEngine.serverSeedHash,
-          serverSeed: gameEngine.serverSeed,
-          completedAt: new Date().toISOString(),
-        });
-        if (gameEngine.recentHistory.length > 20) {
-          gameEngine.recentHistory.pop();
-        }
-      } else {
-        gameEngine.multiplier = nextMult;
-      }
-    } else if (gameEngine.phase === 'CRASHED') {
-      if (elapsed >= gameEngine.crashedHoldMs) {
-        const nextRoundInfo = gameEngine.nextRound;
-        gameEngine.roundId = nextRoundInfo.roundId;
-        gameEngine.crashPoint = nextRoundInfo.crashPoint;
-        gameEngine.serverSeed = nextRoundInfo.serverSeed;
-        gameEngine.serverSeedHash = nextRoundInfo.serverSeedHash;
-        gameEngine.nextRound = generateProvablyFairCrashPoint();
-        gameEngine.phase = 'BETTING';
-        gameEngine.multiplier = 1.0;
-        gameEngine.phaseStartTime = now;
-        gameEngine.bettingDurationMs = Math.max(2000, Number(dbState.config.bettingDurationMs) || 5000);
-        gameEngine.crashedHoldMs = Math.max(1500, Number(dbState.config.crashedHoldMs) || 3500);
-        gameEngine.bets = [];
+    // Check auto-cashouts that triggered before or at crashPoint
+    for (const bet of gameEngine.bets) {
+      if (
+        !bet.cashedOut &&
+        bet.autoCashout !== null &&
+        bet.autoCashout <= gameEngine.crashPoint &&
+        nextMult >= bet.autoCashout
+      ) {
+        const targetMult = bet.autoCashout;
+        withLock(() => processSingleCashout(bet, targetMult)).catch((e) =>
+          console.error('Auto-cashout error:', e)
+        );
       }
     }
+
+    if (nextMult >= gameEngine.crashPoint) {
+      gameEngine.multiplier = gameEngine.crashPoint;
+      gameEngine.phase = 'CRASHED';
+      gameEngine.phaseStartTime = now;
+      gameEngine.recentHistory.unshift({
+        roundId: gameEngine.roundId,
+        crashPoint: gameEngine.crashPoint,
+        serverSeedHash: gameEngine.serverSeedHash,
+        serverSeed: gameEngine.serverSeed,
+        completedAt: new Date().toISOString(),
+      });
+      if (gameEngine.recentHistory.length > 20) {
+        gameEngine.recentHistory.pop();
+      }
+    } else {
+      gameEngine.multiplier = nextMult;
+    }
+  } else if (gameEngine.phase === 'CRASHED') {
+    if (elapsed >= gameEngine.crashedHoldMs) {
+      const nextRoundInfo = gameEngine.nextRound;
+      gameEngine.roundId = nextRoundInfo.roundId;
+      gameEngine.crashPoint = nextRoundInfo.crashPoint;
+      gameEngine.serverSeed = nextRoundInfo.serverSeed;
+      gameEngine.serverSeedHash = nextRoundInfo.serverSeedHash;
+      gameEngine.nextRound = generateProvablyFairCrashPoint();
+      gameEngine.phase = 'BETTING';
+      gameEngine.multiplier = 1.0;
+      gameEngine.phaseStartTime = now;
+      gameEngine.bettingDurationMs = Math.max(2000, Number(dbState.config.bettingDurationMs) || 5000);
+      gameEngine.crashedHoldMs = Math.max(1500, Number(dbState.config.crashedHoldMs) || 3500);
+      gameEngine.bets = [];
+    }
+  }
+}
+
+function startGameLoop(): void {
+  setInterval(() => {
+    syncGameClock();
   }, 80);
 }
 
@@ -794,9 +858,11 @@ async function startServer() {
       welcomeBonus: dbState.config.welcomeBonus,
       placeholderQrUrl: dbState.config.placeholderQrUrl || DEFAULT_QR_IMAGE,
       logoUrl: dbState.config.logoUrl || '',
+      loadingLogoUrl: dbState.config.loadingLogoUrl || '',
       depositBonusEnabled: dbState.config.depositBonusEnabled !== false,
       depositBonusPercent: dbState.config.depositBonusPercent ?? 9,
       minWithdrawalAmount: dbState.config.minWithdrawalAmount ?? 500,
+      referralBonus: dbState.config.referralBonus ?? 50,
       totalUsers: dbState.users.filter((u) => u.role === 'user').length,
     });
   });
@@ -819,25 +885,32 @@ async function startServer() {
         status: u.status,
         balance: u.balance,
         welcomeBonusAwarded: u.welcomeBonusAwarded,
+        referralCode: u.referralCode || u.username.toUpperCase(),
+        referredBy: u.referredBy || null,
+        referralCount: u.referralCount || 0,
+        referralEarnings: u.referralEarnings || 0,
         createdAt: u.createdAt,
       },
       config: {
         welcomeBonus: dbState.config.welcomeBonus,
         placeholderQrUrl: dbState.config.placeholderQrUrl,
         logoUrl: dbState.config.logoUrl || '',
+        loadingLogoUrl: dbState.config.loadingLogoUrl || '',
         depositBonusEnabled: dbState.config.depositBonusEnabled !== false,
         depositBonusPercent: dbState.config.depositBonusPercent ?? 9,
         minWithdrawalAmount: dbState.config.minWithdrawalAmount ?? 500,
+        referralBonus: dbState.config.referralBonus ?? 50,
       },
     });
   });
 
   app.post('/api/auth/signup', async (req: Request, res: Response) => {
     try {
-      const { username, password, confirmPassword } = req.body as {
+      const { username, password, confirmPassword, referralCode } = req.body as {
         username?: string;
         password?: string;
         confirmPassword?: string;
+        referralCode?: string;
       };
 
       const cleanUsername = (username || '').trim();
@@ -866,8 +939,30 @@ async function startServer() {
           return;
         }
 
+        let referrer: UserRecord | undefined;
+        const cleanRef = (referralCode || '').trim().toUpperCase();
+        if (cleanRef) {
+          referrer = dbState.users.find(
+            (u) => (u.referralCode && u.referralCode.toUpperCase() === cleanRef) || u.usernameLower === cleanRef.toLowerCase()
+          );
+          if (!referrer) {
+            res.status(400).json({ error: 'Invalid referral code. Please verify the code or leave it blank.' });
+            return;
+          }
+          if (referrer.status === 'suspended') {
+            res.status(400).json({ error: 'This referral code belongs to a suspended account.' });
+            return;
+          }
+          if (referrer.usernameLower === lower) {
+            res.status(400).json({ error: 'You cannot refer your own account.' });
+            return;
+          }
+        }
+
         const bonusAmount = roundCoins(Math.max(0, dbState.config.welcomeBonus));
         const nowIso = new Date().toISOString();
+        const userRefCode = cleanUsername.toUpperCase();
+
         const newUser: UserRecord = {
           id: `usr_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
           username: cleanUsername,
@@ -877,6 +972,10 @@ async function startServer() {
           status: 'active',
           balance: bonusAmount,
           welcomeBonusAwarded: true,
+          referralCode: userRefCode,
+          referredBy: referrer ? referrer.id : null,
+          referralCount: 0,
+          referralEarnings: 0,
           createdAt: nowIso,
         };
 
@@ -897,6 +996,45 @@ async function startServer() {
             createdAt: nowIso,
           };
           dbState.transactions.unshift(welcomeTx);
+        }
+
+        // If referred, award referral reward to referrer
+        let refTx: TransactionRecord | undefined;
+        let refRecord: ReferralRecord | undefined;
+        const refBonus = roundCoins(Math.max(0, dbState.config.referralBonus ?? 50));
+        if (referrer && refBonus > 0) {
+          const refBalBefore = referrer.balance;
+          referrer.balance = roundCoins(referrer.balance + refBonus);
+          referrer.referralCount = (referrer.referralCount || 0) + 1;
+          referrer.referralEarnings = roundCoins((referrer.referralEarnings || 0) + refBonus);
+
+          refTx = {
+            id: `tx_${Date.now() + 1}_${crypto.randomBytes(3).toString('hex')}`,
+            userId: referrer.id,
+            username: referrer.username,
+            type: 'REFERRAL_REWARD',
+            amount: refBonus,
+            balanceBefore: refBalBefore,
+            balanceAfter: referrer.balance,
+            referenceId: `REF-${newUser.id}`,
+            description: `Referral reward for inviting @${newUser.username} (+₹${refBonus.toFixed(2)})`,
+            createdAt: nowIso,
+          };
+          dbState.transactions.unshift(refTx);
+
+          refRecord = {
+            id: `ref_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+            referrerId: referrer.id,
+            referrerUsername: referrer.username,
+            referredUserId: newUser.id,
+            referredUsername: newUser.username,
+            rewardAmount: refBonus,
+            status: 'COMPLETED',
+            createdAt: nowIso,
+          };
+          dbState.referrals.unshift(refRecord);
+
+          await persistChange({ user: referrer, transaction: refTx, referral: refRecord });
         }
 
         const token = generateSignedToken();
@@ -920,6 +1058,10 @@ async function startServer() {
             status: newUser.status,
             balance: newUser.balance,
             welcomeBonusAwarded: newUser.welcomeBonusAwarded,
+            referralCode: newUser.referralCode,
+            referredBy: newUser.referredBy,
+            referralCount: newUser.referralCount,
+            referralEarnings: newUser.referralEarnings,
             createdAt: newUser.createdAt,
           },
         });
@@ -969,6 +1111,10 @@ async function startServer() {
           status: user.status,
           balance: user.balance,
           welcomeBonusAwarded: user.welcomeBonusAwarded,
+          referralCode: user.referralCode || user.username.toUpperCase(),
+          referredBy: user.referredBy || null,
+          referralCount: user.referralCount || 0,
+          referralEarnings: user.referralEarnings || 0,
           createdAt: user.createdAt,
         },
       });
@@ -1061,10 +1207,18 @@ async function startServer() {
       phase: gameEngine.phase,
       multiplier: gameEngine.multiplier,
       countdownMs,
+      phaseStartTime: gameEngine.phaseStartTime,
+      serverTime: now,
+      bettingDurationMs: gameEngine.bettingDurationMs,
+      crashedHoldMs: gameEngine.crashedHoldMs,
       serverSeedHash: gameEngine.serverSeedHash,
       // Only reveal serverSeed and crashPoint AFTER the round has crashed
       crashPoint: gameEngine.phase === 'CRASHED' ? gameEngine.crashPoint : null,
       serverSeed: gameEngine.phase === 'CRASHED' ? gameEngine.serverSeed : null,
+      nextRound: {
+        roundId: gameEngine.nextRound.roundId,
+        serverSeedHash: gameEngine.nextRound.serverSeedHash,
+      },
       activeBets: gameEngine.bets.map((b) => ({
         username: b.username,
         slotId: b.slotId || 'slot-1',
@@ -1237,9 +1391,35 @@ async function startServer() {
       config: {
         welcomeBonus: dbState.config.welcomeBonus,
         placeholderQrUrl: dbState.config.placeholderQrUrl,
+        logoUrl: dbState.config.logoUrl || '',
+        loadingLogoUrl: dbState.config.loadingLogoUrl || '',
+        depositBonusEnabled: dbState.config.depositBonusEnabled !== false,
+        depositBonusPercent: dbState.config.depositBonusPercent ?? 9,
+        minWithdrawalAmount: dbState.config.minWithdrawalAmount ?? 500,
+        referralBonus: dbState.config.referralBonus ?? 50,
       },
       transactions: myTransactions,
       requests: myRequests,
+    });
+  });
+
+  app.get('/api/wallet/referrals', requireUser, (req: Request, res: Response) => {
+    const currentUser = (req as Request & { currentUser: UserRecord }).currentUser;
+    const myReferrals = dbState.referrals
+      .filter((r) => r.referrerId === currentUser.id)
+      .slice(0, 100);
+    const host = req.get('host') || 'localhost:3000';
+    const proto = req.get('x-forwarded-proto') || 'https';
+    const referralCode = currentUser.referralCode || currentUser.username.toUpperCase();
+    const referralLink = `${proto}://${host}/?ref=${encodeURIComponent(referralCode)}`;
+
+    res.json({
+      referralCode,
+      referralLink,
+      referralBonus: Number(dbState.config.referralBonus) || 50,
+      totalReferred: currentUser.referralCount || myReferrals.length,
+      totalEarnings: currentUser.referralEarnings || roundCoins(myReferrals.reduce((sum, r) => sum + r.rewardAmount, 0)),
+      history: myReferrals,
     });
   });
 
@@ -1730,28 +1910,45 @@ async function startServer() {
       if (reqRecord.type === 'DEPOSIT' && decision === 'APPROVED') {
         // Credit balance exactly once upon admin approval (base deposit + calculated deposit bonus)
         const baseAmount = reqRecord.amount;
-        const bonusAmount = reqRecord.bonusAmount ?? 0;
-        const totalCredit = roundCoins(reqRecord.creditedAmount ?? (baseAmount + bonusAmount));
+        const bonusPercent = reqRecord.bonusPercent ?? (dbState.config.depositBonusEnabled !== false ? (Number(dbState.config.depositBonusPercent) || 9) : 0);
+        const bonusAmount = reqRecord.bonusAmount ?? (bonusPercent > 0 ? roundCoins(baseAmount * (bonusPercent / 100)) : 0);
+        const totalCredit = roundCoins(baseAmount + bonusAmount);
         const balanceBefore = targetUser.balance;
         targetUser.balance = roundCoins(targetUser.balance + totalCredit);
 
-        const bonusDetails = bonusAmount > 0
-          ? ` (Base: ₹${baseAmount.toFixed(2)} + ${reqRecord.bonusPercent || 9}% Bonus: ₹${bonusAmount.toFixed(2)} = Total Credited: ₹${totalCredit.toFixed(2)})`
-          : ` (Credited: ₹${totalCredit.toFixed(2)})`;
-
-        createdTx = {
+        // Transaction 1: Base Deposit Approved
+        const depositTx: TransactionRecord = {
           id: `tx_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
           userId: targetUser.id,
           username: targetUser.username,
           type: 'DEPOSIT_APPROVED',
-          amount: totalCredit,
+          amount: baseAmount,
           balanceBefore,
-          balanceAfter: targetUser.balance,
+          balanceAfter: roundCoins(balanceBefore + baseAmount),
           referenceId: reqRecord.id,
-          description: `Approved deposit request ${reqRecord.id}${bonusDetails}`,
+          description: `Approved deposit request ${reqRecord.id}`,
           createdAt: nowIso,
         };
-        dbState.transactions.unshift(createdTx);
+        dbState.transactions.unshift(depositTx);
+        createdTx = depositTx;
+
+        // Transaction 2: Deposit Bonus (if configured and > 0)
+        if (bonusAmount > 0) {
+          const bonusTx: TransactionRecord = {
+            id: `tx_${Date.now() + 1}_${crypto.randomBytes(3).toString('hex')}`,
+            userId: targetUser.id,
+            username: targetUser.username,
+            type: 'DEPOSIT_BONUS',
+            amount: bonusAmount,
+            balanceBefore: roundCoins(balanceBefore + baseAmount),
+            balanceAfter: targetUser.balance,
+            referenceId: reqRecord.id,
+            description: `${bonusPercent}% deposit bonus for request ${reqRecord.id} (+₹${bonusAmount.toFixed(2)})`,
+            createdAt: nowIso,
+          };
+          dbState.transactions.unshift(bonusTx);
+          persistChange({ transaction: bonusTx }).catch(() => {});
+        }
       } else if (reqRecord.type === 'WITHDRAWAL' && decision === 'REJECTED') {
         // Release reserved balance back to user account exactly once if rejected
         const balanceBefore = targetUser.balance;
@@ -1805,9 +2002,12 @@ async function startServer() {
       resetDefaultQr,
       logoUrl,
       resetDefaultLogo,
+      loadingLogoUrl,
+      resetDefaultLoadingLogo,
       depositBonusEnabled,
       depositBonusPercent,
       minWithdrawalAmount,
+      referralBonus,
       houseEdgePercent,
       maxMultiplier,
       bettingDurationMs,
@@ -1818,9 +2018,12 @@ async function startServer() {
       resetDefaultQr?: boolean;
       logoUrl?: string;
       resetDefaultLogo?: boolean;
+      loadingLogoUrl?: string;
+      resetDefaultLoadingLogo?: boolean;
       depositBonusEnabled?: boolean;
       depositBonusPercent?: number;
       minWithdrawalAmount?: number;
+      referralBonus?: number;
       houseEdgePercent?: number;
       maxMultiplier?: number;
       bettingDurationMs?: number;
@@ -1848,19 +2051,32 @@ async function startServer() {
         changes.push('QR code updated');
       }
 
-      // Admin Logo configuration
+      // Admin Game Logo configuration
       if (resetDefaultLogo) {
         dbState.config.logoUrl = '';
-        changes.push('Custom logo reset to default game branding');
+        changes.push('Custom game logo reset to default');
       } else if (logoUrl !== undefined) {
         const cleanLogo = logoUrl.trim();
-        // Validation: verify data URI or URL format and size bounds
         if (cleanLogo.length > 0 && !cleanLogo.startsWith('data:image/') && !cleanLogo.startsWith('http://') && !cleanLogo.startsWith('https://') && !cleanLogo.startsWith('/')) {
-          res.status(400).json({ error: 'Invalid logo format. Please provide a valid image data URI or URL.' });
+          res.status(400).json({ error: 'Invalid game logo format. Please provide a valid image data URI or URL.' });
           return;
         }
         dbState.config.logoUrl = cleanLogo;
         changes.push(cleanLogo ? 'Game logo updated' : 'Game logo cleared');
+      }
+
+      // Admin Loading Screen Logo configuration
+      if (resetDefaultLoadingLogo) {
+        dbState.config.loadingLogoUrl = '';
+        changes.push('Loading screen logo reset to default');
+      } else if (loadingLogoUrl !== undefined) {
+        const cleanLoadingLogo = loadingLogoUrl.trim();
+        if (cleanLoadingLogo.length > 0 && !cleanLoadingLogo.startsWith('data:image/') && !cleanLoadingLogo.startsWith('http://') && !cleanLoadingLogo.startsWith('https://') && !cleanLoadingLogo.startsWith('/')) {
+          res.status(400).json({ error: 'Invalid loading logo format. Please provide a valid image data URI or URL.' });
+          return;
+        }
+        dbState.config.loadingLogoUrl = cleanLoadingLogo;
+        changes.push(cleanLoadingLogo ? 'Loading screen logo updated' : 'Loading screen logo cleared');
       }
 
       // Deposit bonus configuration
@@ -1881,6 +2097,13 @@ async function startServer() {
         const cleanMin = roundCoins(Math.max(1, Math.min(100000, Number(minWithdrawalAmount))));
         changes.push(`minWithdrawalAmount: ₹${dbState.config.minWithdrawalAmount} -> ₹${cleanMin}`);
         dbState.config.minWithdrawalAmount = cleanMin;
+      }
+
+      // Referral bonus configuration
+      if (referralBonus !== undefined) {
+        const cleanRefBonus = roundCoins(Math.max(0, Math.min(50000, Number(referralBonus))));
+        changes.push(`referralBonus: ₹${dbState.config.referralBonus ?? 50} -> ₹${cleanRefBonus}`);
+        dbState.config.referralBonus = cleanRefBonus;
       }
 
       // Fair game engine future parameters
@@ -1936,6 +2159,7 @@ async function startServer() {
   // ADMIN LIVE FAIR GAME ENGINE & FLIGHT CONTROLS
   // --------------------------------------------------------------------------
   app.get('/api/admin/game-status', requireAdmin, (_req: Request, res: Response) => {
+    syncGameClock();
     const now = Date.now();
     const elapsed = now - gameEngine.phaseStartTime;
     const countdownMs =
@@ -1949,6 +2173,8 @@ async function startServer() {
       multiplier: gameEngine.multiplier,
       crashPoint: gameEngine.crashPoint,
       countdownMs,
+      phaseStartTime: gameEngine.phaseStartTime,
+      serverTime: now,
       activeBetsCount: gameEngine.bets.length,
       totalBetPool: roundCoins(gameEngine.bets.reduce((acc, b) => acc + b.amount, 0)),
       serverSeedHash: gameEngine.serverSeedHash,
@@ -1971,6 +2197,7 @@ async function startServer() {
   app.post('/api/admin/flight/crash', requireAdmin, async (req: Request, res: Response) => {
     const adminUser = (req as Request & { currentUser: UserRecord }).currentUser;
     await withLock(async () => {
+      syncGameClock();
       // Synchronized protection: only allow crashing when flight is actively in progress
       if (gameEngine.phase !== 'FLYING') {
         res.status(400).json({

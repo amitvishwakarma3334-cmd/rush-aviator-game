@@ -2,15 +2,19 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   ArrowDownLeft,
   ArrowUpRight,
+  Check,
   CheckCircle2,
   Clock,
+  Copy,
   Eye,
   EyeOff,
   RefreshCw,
+  UserPlus,
+  Users,
   Wallet,
   XCircle,
 } from 'lucide-react';
-import type { AppConfigRecord, TransactionRecord, TransferRequestRecord, User } from '../types';
+import type { AppConfigRecord, ReferralSummaryResponse, TransactionRecord, TransferRequestRecord, User } from '../types';
 import { UPLOADED_QR_DATA_URI } from '../utils/qrImage';
 import { apiFetch } from '../utils/api';
 import { soundFx } from '../utils/sound';
@@ -19,7 +23,7 @@ interface WalletViewProps {
   user: User | null;
   onBalanceChange: (newBalance: number) => void;
   onRequireLogin: () => void;
-  initialSubTab?: 'overview' | 'deposit' | 'withdraw';
+  initialSubTab?: 'overview' | 'deposit' | 'withdraw' | 'referrals';
 }
 
 export const WalletView: React.FC<WalletViewProps> = ({
@@ -28,7 +32,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
   onRequireLogin,
   initialSubTab = 'deposit',
 }) => {
-  const [subTab, setSubTab] = useState<'overview' | 'deposit' | 'withdraw'>(initialSubTab);
+  const [subTab, setSubTab] = useState<'overview' | 'deposit' | 'withdraw' | 'referrals'>(initialSubTab);
   const [loading, setLoading] = useState<boolean>(true);
   const [balance, setBalance] = useState<number>(user?.balance ?? 0);
   const [config, setConfig] = useState<AppConfigRecord>({
@@ -37,9 +41,13 @@ export const WalletView: React.FC<WalletViewProps> = ({
     depositBonusEnabled: true,
     depositBonusPercent: 9,
     minWithdrawalAmount: 500,
+    referralBonus: 50,
   });
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
   const [requests, setRequests] = useState<TransferRequestRecord[]>([]);
+  const [referralData, setReferralData] = useState<ReferralSummaryResponse | null>(null);
+  const [copiedCode, setCopiedCode] = useState<boolean>(false);
+  const [copiedLink, setCopiedLink] = useState<boolean>(false);
 
   // Deposit Form State
   const [depositAmount, setDepositAmount] = useState<string>('500');
@@ -79,6 +87,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
           depositBonusEnabled: sysData.depositBonusEnabled !== false,
           depositBonusPercent: sysData.depositBonusPercent ?? 9,
           minWithdrawalAmount: sysData.minWithdrawalAmount ?? 500,
+          referralBonus: sysData.referralBonus ?? 50,
         }));
       }
 
@@ -88,29 +97,57 @@ export const WalletView: React.FC<WalletViewProps> = ({
       }
 
       const res = await apiFetch('/api/wallet/summary');
-      if (!res.ok) return;
-      const data = await res.json();
-      setBalance(data.balance);
-      onBalanceChange(data.balance);
-      if (data.config) {
-        setConfig((prev) => ({
-          ...prev,
-          welcomeBonus: data.config.welcomeBonus ?? 500,
-          placeholderQrUrl: data.config.placeholderQrUrl || UPLOADED_QR_DATA_URI,
-          logoUrl: data.config.logoUrl || '',
-          depositBonusEnabled: data.config.depositBonusEnabled !== false,
-          depositBonusPercent: data.config.depositBonusPercent ?? 9,
-          minWithdrawalAmount: data.config.minWithdrawalAmount ?? 500,
-        }));
+      if (res.ok) {
+        const data = await res.json();
+        setBalance(data.balance);
+        onBalanceChange(data.balance);
+        if (data.config) {
+          setConfig((prev) => ({
+            ...prev,
+            welcomeBonus: data.config.welcomeBonus ?? 500,
+            placeholderQrUrl: data.config.placeholderQrUrl || UPLOADED_QR_DATA_URI,
+            logoUrl: data.config.logoUrl || '',
+            depositBonusEnabled: data.config.depositBonusEnabled !== false,
+            depositBonusPercent: data.config.depositBonusPercent ?? 9,
+            minWithdrawalAmount: data.config.minWithdrawalAmount ?? 500,
+            referralBonus: data.config.referralBonus ?? 50,
+          }));
+        }
+        setTransactions(data.transactions || []);
+        setRequests(data.requests || []);
       }
-      setTransactions(data.transactions || []);
-      setRequests(data.requests || []);
+
+      // Fetch referral summary
+      try {
+        const refRes = await apiFetch('/api/wallet/referrals');
+        if (refRes.ok) {
+          const refJson = await refRes.json();
+          setReferralData(refJson);
+        }
+      } catch {
+        // non-blocking
+      }
     } catch (err) {
       console.error('Failed to fetch wallet summary:', err);
     } finally {
       setLoading(false);
     }
   }, [user, onBalanceChange]);
+
+  const copyReferralCode = () => {
+    const code = referralData?.referralCode || user?.referralCode || user?.username.toUpperCase() || '';
+    if (!code) return;
+    navigator.clipboard.writeText(code);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
+  };
+
+  const copyReferralLink = () => {
+    const link = referralData?.referralLink || `${window.location.origin}/?ref=${referralData?.referralCode || user?.referralCode || user?.username.toUpperCase() || ''}`;
+    navigator.clipboard.writeText(link);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
 
   useEffect(() => {
     fetchWalletData();
@@ -362,6 +399,18 @@ export const WalletView: React.FC<WalletViewProps> = ({
             }`}
           >
             Transaction History
+          </button>
+          <button
+            type="button"
+            onClick={() => setSubTab('referrals')}
+            className={`flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              subTab === 'referrals'
+                ? 'bg-rose-600 text-white'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <UserPlus className="w-3.5 h-3.5" />
+            <span>Refer & Earn</span>
           </button>
         </div>
       </div>
@@ -768,6 +817,179 @@ export const WalletView: React.FC<WalletViewProps> = ({
 
             <div className="pt-4 border-t border-slate-800 text-xs text-slate-400">
               Track your request status and reference ID in the history below.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* REFER & EARN SECTION */}
+      {subTab === 'referrals' && (
+        <div className="space-y-6">
+          {/* Top Referral Stats Banner */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-[#121723] border border-slate-800 rounded-2xl p-5 flex flex-col justify-between">
+              <div className="text-xs text-slate-400 font-medium">Reward Per Friend</div>
+              <div className="text-3xl font-display font-extrabold text-emerald-400 font-mono-tabular mt-2">
+                +₹{Number(config.referralBonus ?? 50).toFixed(2)}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                Credited directly to your wallet balance
+              </div>
+            </div>
+
+            <div className="bg-[#121723] border border-slate-800 rounded-2xl p-5 flex flex-col justify-between">
+              <div className="text-xs text-slate-400 font-medium">Friends Joined</div>
+              <div className="text-3xl font-display font-extrabold text-white font-mono-tabular mt-2">
+                {referralData?.totalReferred ?? user?.referralCount ?? 0}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                Verified player accounts signed up
+              </div>
+            </div>
+
+            <div className="bg-[#121723] border border-slate-800 rounded-2xl p-5 flex flex-col justify-between">
+              <div className="text-xs text-slate-400 font-medium">Total Referral Earnings</div>
+              <div className="text-3xl font-display font-extrabold text-amber-400 font-mono-tabular mt-2">
+                ₹{(referralData?.totalEarnings ?? user?.referralEarnings ?? 0).toFixed(2)}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                Earned with zero withdrawal restrictions
+              </div>
+            </div>
+          </div>
+
+          {/* Referral Code & Share Link Boxes */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+            <div className="lg:col-span-7 bg-[#121723] border border-slate-800 rounded-2xl p-6 space-y-5">
+              <div>
+                <h2 className="text-xl font-display font-bold text-white flex items-center gap-2">
+                  <UserPlus className="w-5 h-5 text-rose-500" />
+                  <span>Your Referral Code & Link</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  Share your exclusive code or direct sign-up link. When friends join, your reward is processed immediately.
+                </p>
+              </div>
+
+              {/* Code Box */}
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                  Your Unique Referral Code
+                </label>
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 px-4 py-3 rounded-xl bg-[#0A0D14] border border-slate-700 font-mono-tabular font-bold text-lg text-rose-400 tracking-wider">
+                    {referralData?.referralCode || user?.referralCode || user?.username.toUpperCase() || 'AVIATOR'}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={copyReferralCode}
+                    className={`flex items-center gap-1.5 px-4 py-3 rounded-xl text-xs font-semibold transition-colors shrink-0 cursor-pointer ${
+                      copiedCode
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-rose-600 hover:bg-rose-500 text-white'
+                    }`}
+                  >
+                    {copiedCode ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                    <span>{copiedCode ? 'Copied!' : 'Copy Code'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Link Box */}
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                  Shareable Invite Link
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    readOnly
+                    value={
+                      referralData?.referralLink ||
+                      (typeof window !== 'undefined'
+                        ? `${window.location.origin}/?ref=${referralData?.referralCode || user?.referralCode || user?.username.toUpperCase() || ''}`
+                        : '')
+                    }
+                    className="flex-1 px-3.5 py-3 rounded-xl bg-[#0A0D14] border border-slate-700 text-xs font-mono-tabular text-slate-300 truncate focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={copyReferralLink}
+                    className={`flex items-center gap-1.5 px-4 py-3 rounded-xl text-xs font-semibold transition-colors shrink-0 cursor-pointer ${
+                      copiedLink
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'
+                    }`}
+                  >
+                    {copiedLink ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                    <span>{copiedLink ? 'Copied!' : 'Copy Link'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Referral Guidelines */}
+              <div className="p-4 rounded-xl bg-[#0A0D14] border border-slate-800 text-xs text-slate-400 space-y-2">
+                <div className="font-semibold text-slate-200">How Refer & Earn Works:</div>
+                <div className="flex items-start gap-2">
+                  <span className="w-4 h-4 rounded-full bg-rose-500/20 text-rose-400 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">1</span>
+                  <span>Share your referral code or link with friends, groups, or social channels.</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span className="w-4 h-4 rounded-full bg-rose-500/20 text-rose-400 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">2</span>
+                  <span>Your friend creates an account with your code automatically pre-filled.</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span className="w-4 h-4 rounded-full bg-rose-500/20 text-rose-400 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">3</span>
+                  <span>You receive ₹{Number(config.referralBonus ?? 50).toFixed(2)} instantly in your wallet to play or withdraw.</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Referral Invite History */}
+            <div className="lg:col-span-5 bg-[#121723] border border-slate-800 rounded-2xl p-6 flex flex-col justify-between">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                  <h3 className="text-base font-display font-bold text-white flex items-center gap-2">
+                    <Users className="w-4 h-4 text-emerald-400" />
+                    <span>Invited Friends History</span>
+                  </h3>
+                  <span className="text-xs text-slate-400 font-mono-tabular">
+                    {referralData?.history?.length ?? 0} Recorded
+                  </span>
+                </div>
+
+                {!referralData?.history || referralData.history.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-slate-500">
+                    No friends have joined via your referral link yet. Share your code to earn your first reward!
+                  </div>
+                ) : (
+                  <div className="space-y-2.5 max-h-[340px] overflow-y-auto pr-1">
+                    {referralData.history.map((item) => (
+                      <div
+                        key={item.id}
+                        className="p-3 rounded-xl bg-[#0A0D14] border border-slate-800/90 flex items-center justify-between gap-3 text-xs"
+                      >
+                        <div>
+                          <div className="font-semibold text-white">@{item.referredUsername}</div>
+                          <div className="text-[11px] text-slate-500">
+                            {new Date(item.createdAt).toLocaleDateString()}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="font-mono-tabular font-bold text-emerald-400">
+                            +₹{item.rewardAmount.toFixed(2)}
+                          </div>
+                          <div className="text-[10px] text-emerald-500/80 font-medium">Credited</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-4 border-t border-slate-800 text-xs text-slate-400">
+                Referral bonuses are automatically tracked in your transaction ledger.
+              </div>
             </div>
           </div>
         </div>

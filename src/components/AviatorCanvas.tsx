@@ -14,8 +14,13 @@ interface AviatorCanvasProps {
 
 export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const gameStateRef = useRef<GameStateResponse>(gameState);
+  gameStateRef.current = gameState;
+
   const [audioSettings, setAudioSettings] = useState<AudioSettings>(() => soundFx.getSettings());
   const [selectedHistoryRound, setSelectedHistoryRound] = useState<CrashRoundHistoryItem | null>(null);
+  const [displayMultiplier, setDisplayMultiplier] = useState<number>(gameState.multiplier);
+  const [displayCountdown, setDisplayCountdown] = useState<number>(gameState.countdownMs);
 
   // Synchronize flight audio strictly with server-authoritative game state
   useEffect(() => {
@@ -43,9 +48,10 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
     if (!ctx) return;
 
     let animationFrameId: number;
-    let startTime = performance.now();
+    let lastUiUpdate = 0;
 
     const renderFrame = (now: number) => {
+      const gs = gameStateRef.current;
       const rect = canvas.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
       if (canvas.width !== Math.floor(rect.width * dpr) || canvas.height !== Math.floor(rect.height * dpr)) {
@@ -59,6 +65,32 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
       const width = rect.width;
       const height = rect.height;
 
+      // Calculate smooth authoritative multiplier / countdown
+      let currentMult = gs.multiplier;
+      if (gs.phase === 'FLYING') {
+        const clientNow = Date.now();
+        const baseStartTime = gs.phaseStartTime || clientNow;
+        const elapsedSec = Math.max(0, (clientNow - baseStartTime) / 1000);
+        const continuous = Math.max(1.0, Math.exp(0.068 * elapsedSec));
+        // Use smooth continuous multiplier bounded by authoritative crash point if known
+        currentMult = gs.crashPoint ? Math.min(gs.crashPoint, continuous) : Math.max(gs.multiplier, continuous);
+      } else if (gs.phase === 'CRASHED') {
+        currentMult = gs.crashPoint || gs.multiplier;
+      }
+
+      // Update UI readout at ~30-60fps smoothly
+      if (now - lastUiUpdate > 32) {
+        lastUiUpdate = now;
+        setDisplayMultiplier(currentMult);
+        if (gs.phase === 'BETTING') {
+          const clientNow = Date.now();
+          const baseStart = gs.phaseStartTime || clientNow;
+          const elapsed = clientNow - baseStart;
+          const remaining = Math.max(0, 5000 - elapsed);
+          setDisplayCountdown(remaining);
+        }
+      }
+
       // 1. Deep Cockpit Radar Background
       const bgGrad = ctx.createRadialGradient(
         width * 0.5,
@@ -68,10 +100,10 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
         height * 0.5,
         Math.max(width, height) * 0.85
       );
-      if (gameState.phase === 'CRASHED') {
+      if (gs.phase === 'CRASHED') {
         bgGrad.addColorStop(0, '#1F1218');
         bgGrad.addColorStop(1, '#090C12');
-      } else if (gameState.phase === 'FLYING') {
+      } else if (gs.phase === 'FLYING') {
         bgGrad.addColorStop(0, '#231119');
         bgGrad.addColorStop(1, '#0A0D14');
       } else {
@@ -82,12 +114,12 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
       ctx.fillRect(0, 0, width, height);
 
       // 2. Subtle Radar Grid & Sunburst Rays from Bottom-Left Origin
-      const padLeft = 44;
-      const padBottom = 36;
-      const padTop = 32;
-      const padRight = 40;
-      const plotW = Math.max(100, width - padLeft - padRight);
-      const plotH = Math.max(100, height - padTop - padBottom);
+      const padLeft = 40;
+      const padBottom = 32;
+      const padTop = 28;
+      const padRight = 36;
+      const plotW = Math.max(80, width - padLeft - padRight);
+      const plotH = Math.max(80, height - padTop - padBottom);
       const originX = padLeft;
       const originY = height - padBottom;
 
@@ -98,7 +130,7 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
       ctx.clip();
 
       const rayCount = 14;
-      const rotationOffset = gameState.phase === 'FLYING' ? (now - startTime) * 0.00018 : 0;
+      const rotationOffset = gs.phase === 'FLYING' ? (now * 0.00018) : 0;
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.025)';
       ctx.lineWidth = 1;
       for (let i = 0; i < rayCount; i++) {
@@ -142,7 +174,7 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
       ctx.stroke();
 
       // Axis Ticks (Dots along X and Y axes)
-      const tickOffset = gameState.phase === 'FLYING' ? ((now * 0.04) % 24) : 0;
+      const tickOffset = gs.phase === 'FLYING' ? ((now * 0.04) % 24) : 0;
       ctx.fillStyle = 'rgba(148, 163, 184, 0.35)';
       for (let x = originX + 24 - tickOffset; x < originX + plotW; x += 24) {
         if (x > originX) {
@@ -160,16 +192,16 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
       }
 
       // 3. Flight Curve & Animated Airplane
-      if (gameState.phase === 'FLYING' || gameState.phase === 'CRASHED') {
-        const mult = Math.max(1.0, gameState.multiplier);
+      if (gs.phase === 'FLYING' || gs.phase === 'CRASHED') {
+        const mult = Math.max(1.0, currentMult);
         // Normalize progress smoothly between 0.08 and 0.92 of plot area
         const logProgress = Math.min(1, Math.log10(mult) / Math.log10(25));
         const linearBoost = Math.min(0.88, (mult - 1) / 3.5);
         const progress = Math.max(0.06, Math.min(0.92, linearBoost * 0.55 + logProgress * 0.45));
 
         // Gentle bobbing oscillation when flying at higher multipliers
-        const bobX = gameState.phase === 'FLYING' ? Math.sin(now * 0.003) * 4 : 0;
-        const bobY = gameState.phase === 'FLYING' ? Math.cos(now * 0.004) * 5 : 0;
+        const bobX = gs.phase === 'FLYING' ? Math.sin(now * 0.003) * 4 : 0;
+        const bobY = gs.phase === 'FLYING' ? Math.cos(now * 0.004) * 5 : 0;
 
         const targetX = originX + plotW * progress + bobX;
         const targetY = originY - plotH * Math.pow(progress, 1.18) + bobY;
@@ -177,7 +209,7 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
         const cpX = originX + (targetX - originX) * 0.58;
         const cpY = originY - (originY - targetY) * 0.14;
 
-        if (gameState.phase === 'FLYING') {
+        if (gs.phase === 'FLYING') {
           // Fill area under flight curve
           const areaGrad = ctx.createLinearGradient(originX, targetY, originX, originY);
           areaGrad.addColorStop(0, 'rgba(225, 29, 72, 0.36)');
@@ -211,7 +243,7 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
         let planeY = targetY;
         let planeAngle = -0.34;
 
-        if (gameState.phase === 'FLYING') {
+        if (gs.phase === 'FLYING') {
           const dx = targetX - cpX;
           const dy = targetY - cpY;
           planeAngle = Math.atan2(dy, dx);
@@ -227,7 +259,7 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
         ctx.rotate(planeAngle);
 
         // Jet / Engine Exhaust Flame when flying
-        if (gameState.phase === 'FLYING') {
+        if (gs.phase === 'FLYING') {
           const flameLen = 18 + Math.sin(now * 0.05) * 6;
           const flameGrad = ctx.createLinearGradient(-22, 0, -22 - flameLen, 0);
           flameGrad.addColorStop(0, '#FDE047');
@@ -297,10 +329,10 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
 
     animationFrameId = requestAnimationFrame(renderFrame);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [gameState.phase, gameState.multiplier]);
+  }, []);
 
-  const countdownSec = (gameState.countdownMs / 1000).toFixed(1);
-  const progressPercent = Math.min(100, Math.max(0, (gameState.countdownMs / 5000) * 100));
+  const countdownSec = (displayCountdown / 1000).toFixed(1);
+  const progressPercent = Math.min(100, Math.max(0, (displayCountdown / 5000) * 100));
 
   return (
     <div className="flex flex-col gap-3">
@@ -356,7 +388,7 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
       </div>
 
       {/* Main Aviation Crash Stage */}
-      <div className="relative w-full h-[210px] sm:h-[300px] lg:h-[390px] rounded-2xl overflow-hidden border border-slate-800 bg-[#0A0D14]">
+      <div className="relative w-full h-[185px] xs:h-[210px] sm:h-[290px] lg:h-[370px] rounded-2xl overflow-hidden border border-slate-800 bg-[#0A0D14]">
         <canvas ref={canvasRef} className="w-full h-full block" />
 
         {/* Top-Left Flight Telemetry Metadata (Unboxed clean text with separators) */}
@@ -398,18 +430,17 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
           {gameState.phase === 'FLYING' && (
             <div className="flex flex-col items-center">
               <div className="text-5xl sm:text-7xl font-display font-extrabold tracking-tight text-white font-mono-tabular drop-shadow-[0_4px_24px_rgba(225,29,72,0.45)]">
-                {gameState.multiplier.toFixed(2)}x
+                {displayMultiplier.toFixed(2)}x
               </div>
-              {gameState.myBet && !gameState.myBet.cashedOut && (
+              {gameState.myBets && gameState.myBets.some((b) => !b.cashedOut) ? (
                 <p className="mt-2 text-sm font-mono-tabular font-semibold text-emerald-400">
-                  Cash Out Value: ₹{(gameState.myBet.amount * gameState.multiplier).toFixed(2)}
+                  Live Cash Out: ₹{gameState.myBets.filter((b) => !b.cashedOut).reduce((sum, b) => sum + (b.amount * displayMultiplier), 0).toFixed(2)}
                 </p>
-              )}
-              {gameState.myBet && gameState.myBet.cashedOut && (
+              ) : gameState.myBet && !gameState.myBet.cashedOut ? (
                 <p className="mt-2 text-sm font-mono-tabular font-semibold text-emerald-400">
-                  Cashed Out at {gameState.myBet.cashoutMultiplier?.toFixed(2)}x (+₹{gameState.myBet.payout?.toFixed(2)})
+                  Cash Out Value: ₹{(gameState.myBet.amount * displayMultiplier).toFixed(2)}
                 </p>
-              )}
+              ) : null}
             </div>
           )}
 
@@ -419,7 +450,7 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
                 FLEW AWAY!
               </p>
               <div className="text-5xl sm:text-7xl font-display font-extrabold tracking-tight text-rose-500 font-mono-tabular">
-                {gameState.multiplier.toFixed(2)}x
+                {(gameState.crashPoint || displayMultiplier).toFixed(2)}x
               </div>
               <p className="text-xs text-slate-400 mt-2">
                 Round settled · Next flight starting shortly

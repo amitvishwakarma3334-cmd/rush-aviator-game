@@ -5,12 +5,14 @@ interface AviatorSplashScreenProps {
   isReady: boolean;
   onFinish: () => void;
   minDisplayTimeMs?: number;
+  customLogoUrl?: string;
 }
 
 export const AviatorSplashScreen: React.FC<AviatorSplashScreenProps> = ({
   isReady,
   onFinish,
   minDisplayTimeMs = 1500,
+  customLogoUrl,
 }) => {
   const [isMounted, setIsMounted] = useState<boolean>(false);
   const [progress, setProgress] = useState<number>(12);
@@ -105,10 +107,18 @@ export const AviatorSplashScreen: React.FC<AviatorSplashScreenProps> = ({
       >
         {/* Prominent Official Logo with original aspect ratio */}
         <div className="w-56 sm:w-64 md:w-72 max-w-[85vw] aspect-square flex items-center justify-center drop-shadow-[0_12px_40px_rgba(229,5,58,0.4)]">
-          <AviatorOfficialLogo
-            className="w-full h-full object-contain"
-            glow={true}
-          />
+          {customLogoUrl ? (
+            <img
+              src={customLogoUrl}
+              alt="Aviator Logo"
+              className="w-full h-full object-contain filter drop-shadow-[0_0_24px_rgba(225,29,72,0.6)]"
+            />
+          ) : (
+            <AviatorOfficialLogo
+              className="w-full h-full object-contain"
+              glow={true}
+            />
+          )}
         </div>
 
         {/* Subtle, elegant loading indicator */}

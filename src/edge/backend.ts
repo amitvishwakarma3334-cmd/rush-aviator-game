@@ -9,6 +9,10 @@ export interface UserRecord {
   status: 'active' | 'suspended';
   balance: number;
   welcomeBonusAwarded: boolean;
+  referralCode?: string;
+  referredBy?: string | null;
+  referralCount?: number;
+  referralEarnings?: number;
   createdAt: string;
 }
 
@@ -21,6 +25,8 @@ export interface TransactionRecord {
     | 'GAME_BET'
     | 'GAME_WIN'
     | 'DEPOSIT_APPROVED'
+    | 'DEPOSIT_BONUS'
+    | 'REFERRAL_REWARD'
     | 'WITHDRAWAL_RESERVE'
     | 'WITHDRAWAL_REFUND'
     | 'ADMIN_ADJUSTMENT';
@@ -38,6 +44,9 @@ export interface TransferRequestRecord {
   username: string;
   type: 'DEPOSIT' | 'WITHDRAWAL';
   amount: number;
+  bonusAmount?: number;
+  bonusPercent?: number;
+  creditedAmount?: number;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   mobileNumber?: string;
   accountHolderName?: string;
@@ -68,8 +77,28 @@ export interface AuditLogRecord {
 export interface AppConfigRecord {
   welcomeBonus: number;
   placeholderQrUrl: string;
+  logoUrl?: string;
+  loadingLogoUrl?: string;
+  depositBonusEnabled?: boolean;
+  depositBonusPercent?: number;
+  minWithdrawalAmount?: number;
+  referralBonus?: number;
+  houseEdgePercent?: number;
+  maxMultiplier?: number;
+  bettingDurationMs?: number;
+  crashedHoldMs?: number;
   updatedAt: string;
   updatedBy: string;
+}
+
+export interface ReferralRecord {
+  id: string;
+  referrerId: string;
+  referrerUsername: string;
+  referredUserId: string;
+  referredUsername: string;
+  rewardAmount: number;
+  createdAt: string;
 }
 
 export interface SessionRecord {
@@ -109,12 +138,19 @@ export interface PersistedGameEngine {
   crashedHoldMs: number;
   bets: ActiveRoundBet[];
   recentHistory: CrashRoundHistoryItem[];
+  nextRound?: {
+    roundId: string;
+    crashPoint: number;
+    serverSeed: string;
+    serverSeedHash: string;
+  };
 }
 
 export interface EdgeDatabaseState {
   users: UserRecord[];
   transactions: TransactionRecord[];
   requests: TransferRequestRecord[];
+  referrals: ReferralRecord[];
   auditLogs: AuditLogRecord[];
   config: AppConfigRecord;
   sessions: SessionRecord[];
@@ -281,6 +317,7 @@ async function createInitialState(env: EdgeEnv): Promise<EdgeDatabaseState> {
   const welcomeBonus = Number(env.DEFAULT_WELCOME_BONUS) || 500;
 
   const initialRound = await generateProvablyFairRound();
+  const nextRound = await generateProvablyFairRound();
   const recentHistory: CrashRoundHistoryItem[] = [];
   for (let i = 10; i >= 1; i--) {
     const sample = await generateProvablyFairRound();
@@ -302,6 +339,9 @@ async function createInitialState(env: EdgeEnv): Promise<EdgeDatabaseState> {
     status: 'active',
     balance: 0,
     welcomeBonusAwarded: false,
+    referralCode: adminUsername.toUpperCase(),
+    referralCount: 0,
+    referralEarnings: 0,
     createdAt: new Date().toISOString(),
   };
 
@@ -309,10 +349,21 @@ async function createInitialState(env: EdgeEnv): Promise<EdgeDatabaseState> {
     users: [adminUser],
     transactions: [],
     requests: [],
+    referrals: [],
     auditLogs: [],
     config: {
       welcomeBonus,
       placeholderQrUrl: UPLOADED_QR_DATA_URI,
+      logoUrl: '',
+      loadingLogoUrl: '',
+      depositBonusEnabled: true,
+      depositBonusPercent: 9,
+      minWithdrawalAmount: 500,
+      referralBonus: 50,
+      houseEdgePercent: 3,
+      maxMultiplier: 250,
+      bettingDurationMs: 5000,
+      crashedHoldMs: 3500,
       updatedAt: new Date().toISOString(),
       updatedBy: 'system',
     },
@@ -327,6 +378,12 @@ async function createInitialState(env: EdgeEnv): Promise<EdgeDatabaseState> {
       crashedHoldMs: 3500,
       bets: [],
       recentHistory,
+      nextRound: {
+        roundId: nextRound.roundId,
+        crashPoint: nextRound.crashPoint,
+        serverSeed: nextRound.serverSeed,
+        serverSeedHash: nextRound.serverSeedHash,
+      },
     },
   };
 }
@@ -594,6 +651,52 @@ export async function handleEdgeApiRequest(
     await storage.save(dbState);
   }
 
+  // Ensure state structures are backward-compatible and fully populated
+  if (!dbState.referrals) dbState.referrals = [];
+  if (!dbState.transactions) dbState.transactions = [];
+  if (!dbState.requests) dbState.requests = [];
+  if (!dbState.auditLogs) dbState.auditLogs = [];
+  if (!dbState.sessions) dbState.sessions = [];
+  if (!dbState.users) dbState.users = [];
+  if (!dbState.config) {
+    dbState.config = {
+      welcomeBonus: 500,
+      placeholderQrUrl: UPLOADED_QR_DATA_URI,
+      logoUrl: '',
+      loadingLogoUrl: '',
+      depositBonusEnabled: true,
+      depositBonusPercent: 9,
+      minWithdrawalAmount: 500,
+      referralBonus: 50,
+      houseEdgePercent: 3,
+      maxMultiplier: 250,
+      bettingDurationMs: 5000,
+      crashedHoldMs: 3500,
+      updatedAt: new Date().toISOString(),
+      updatedBy: 'system',
+    };
+  } else {
+    if (dbState.config.logoUrl === undefined) dbState.config.logoUrl = '';
+    if (dbState.config.loadingLogoUrl === undefined) dbState.config.loadingLogoUrl = '';
+    if (dbState.config.depositBonusEnabled === undefined) dbState.config.depositBonusEnabled = true;
+    if (dbState.config.depositBonusPercent === undefined) dbState.config.depositBonusPercent = 9;
+    if (dbState.config.minWithdrawalAmount === undefined) dbState.config.minWithdrawalAmount = 500;
+    if (dbState.config.referralBonus === undefined) dbState.config.referralBonus = 50;
+    if (dbState.config.houseEdgePercent === undefined) dbState.config.houseEdgePercent = 3;
+    if (dbState.config.maxMultiplier === undefined) dbState.config.maxMultiplier = 250;
+  }
+
+  // Ensure next round is populated in game engine
+  if (!dbState.game.nextRound) {
+    const nr = await generateProvablyFairRound();
+    dbState.game.nextRound = {
+      roundId: nr.roundId,
+      crashPoint: nr.crashPoint,
+      serverSeed: nr.serverSeed,
+      serverSeedHash: nr.serverSeedHash,
+    };
+  }
+
   // Ensure admin user always exists
   const adminUsername = (env.ADMIN_USERNAME || 'admin').trim();
   const adminPassword = env.ADMIN_PASSWORD || 'AdminDemoPassword123!';
@@ -607,6 +710,9 @@ export async function handleEdgeApiRequest(
       status: 'active',
       balance: 0,
       welcomeBonusAwarded: false,
+      referralCode: adminUsername.toUpperCase(),
+      referralCount: 0,
+      referralEarnings: 0,
       createdAt: new Date().toISOString(),
     });
     await storage.save(dbState);
@@ -619,6 +725,12 @@ export async function handleEdgeApiRequest(
       mongoConfigured: true,
       welcomeBonus: dbState.config.welcomeBonus,
       placeholderQrUrl: dbState.config.placeholderQrUrl || UPLOADED_QR_DATA_URI,
+      logoUrl: dbState.config.logoUrl || '',
+      loadingLogoUrl: dbState.config.loadingLogoUrl || '',
+      depositBonusEnabled: dbState.config.depositBonusEnabled !== false,
+      depositBonusPercent: dbState.config.depositBonusPercent ?? 9,
+      minWithdrawalAmount: dbState.config.minWithdrawalAmount ?? 500,
+      referralBonus: dbState.config.referralBonus ?? 50,
       totalUsers: dbState.users.filter((u) => u.role !== 'admin').length,
     });
   }
@@ -638,11 +750,21 @@ export async function handleEdgeApiRequest(
         status: u.status,
         balance: u.balance,
         welcomeBonusAwarded: u.welcomeBonusAwarded,
+        referralCode: u.referralCode,
+        referredBy: u.referredBy,
+        referralCount: u.referralCount || 0,
+        referralEarnings: u.referralEarnings || 0,
         createdAt: u.createdAt,
       },
       config: {
         welcomeBonus: dbState.config.welcomeBonus,
         placeholderQrUrl: dbState.config.placeholderQrUrl,
+        logoUrl: dbState.config.logoUrl || '',
+        loadingLogoUrl: dbState.config.loadingLogoUrl || '',
+        depositBonusEnabled: dbState.config.depositBonusEnabled !== false,
+        depositBonusPercent: dbState.config.depositBonusPercent ?? 9,
+        minWithdrawalAmount: dbState.config.minWithdrawalAmount ?? 500,
+        referralBonus: dbState.config.referralBonus ?? 50,
       },
     });
   }
@@ -653,6 +775,7 @@ export async function handleEdgeApiRequest(
       username?: string;
       password?: string;
       confirmPassword?: string;
+      referralCode?: string;
     };
     const cleanUsername = (body.username || '').trim();
     if (!cleanUsername || cleanUsername.length < 3 || cleanUsername.length > 24) {
@@ -679,8 +802,26 @@ export async function handleEdgeApiRequest(
       );
     }
 
+    // Validate referral code if provided
+    let referrer: UserRecord | undefined;
+    const rawReferralCode = (body.referralCode || '').trim().toUpperCase();
+    if (rawReferralCode) {
+      referrer = dbState.users.find(
+        (u) => (u.referralCode && u.referralCode.toUpperCase() === rawReferralCode) ||
+               u.username.toUpperCase() === rawReferralCode
+      );
+      if (!referrer) {
+        return jsonResponse(
+          { error: `The referral code "${rawReferralCode}" is invalid or does not exist.` },
+          400
+        );
+      }
+    }
+
     const bonusAmount = roundCoins(Math.max(0, dbState.config.welcomeBonus));
     const nowIso = new Date().toISOString();
+    const generatedReferralCode = cleanUsername.toUpperCase().slice(0, 12);
+
     const newUser: UserRecord = {
       id: `usr_${Date.now()}_${randomHex(3)}`,
       username: cleanUsername,
@@ -690,6 +831,10 @@ export async function handleEdgeApiRequest(
       status: 'active',
       balance: bonusAmount,
       welcomeBonusAwarded: true,
+      referralCode: generatedReferralCode,
+      referredBy: referrer ? referrer.id : null,
+      referralCount: 0,
+      referralEarnings: 0,
       createdAt: nowIso,
     };
     dbState.users.push(newUser);
@@ -707,6 +852,41 @@ export async function handleEdgeApiRequest(
         description: `Welcome bonus (+₹${bonusAmount.toFixed(2)})`,
         createdAt: nowIso,
       });
+    }
+
+    // Reward referrer if valid
+    if (referrer) {
+      const referralReward = Math.max(0, Number(dbState.config.referralBonus) || 50);
+      referrer.referralCount = (referrer.referralCount || 0) + 1;
+      if (referralReward > 0) {
+        const refBalanceBefore = referrer.balance;
+        referrer.balance = roundCoins(referrer.balance + referralReward);
+        referrer.referralEarnings = roundCoins((referrer.referralEarnings || 0) + referralReward);
+
+        const refTx: TransactionRecord = {
+          id: `tx_${Date.now() + 1}_${randomHex(3)}`,
+          userId: referrer.id,
+          username: referrer.username,
+          type: 'REFERRAL_REWARD',
+          amount: referralReward,
+          balanceBefore: refBalanceBefore,
+          balanceAfter: referrer.balance,
+          referenceId: newUser.id,
+          description: `Referral reward for inviting ${newUser.username} (+₹${referralReward.toFixed(2)})`,
+          createdAt: nowIso,
+        };
+        dbState.transactions.unshift(refTx);
+
+        dbState.referrals.unshift({
+          id: `ref_${Date.now()}_${randomHex(3)}`,
+          referrerId: referrer.id,
+          referrerUsername: referrer.username,
+          referredUserId: newUser.id,
+          referredUsername: newUser.username,
+          rewardAmount: referralReward,
+          createdAt: nowIso,
+        });
+      }
     }
 
     const token = await generateSignedTokenEdge(secret, newUser);
@@ -729,6 +909,10 @@ export async function handleEdgeApiRequest(
           status: newUser.status,
           balance: newUser.balance,
           welcomeBonusAwarded: newUser.welcomeBonusAwarded,
+          referralCode: newUser.referralCode,
+          referredBy: newUser.referredBy,
+          referralCount: newUser.referralCount || 0,
+          referralEarnings: newUser.referralEarnings || 0,
           createdAt: newUser.createdAt,
         },
       },
@@ -778,6 +962,10 @@ export async function handleEdgeApiRequest(
           status: user.status,
           balance: user.balance,
           welcomeBonusAwarded: user.welcomeBonusAwarded,
+          referralCode: user.referralCode,
+          referredBy: user.referredBy,
+          referralCount: user.referralCount || 0,
+          referralEarnings: user.referralEarnings || 0,
           createdAt: user.createdAt,
         },
       },
@@ -883,8 +1071,17 @@ export async function handleEdgeApiRequest(
       })),
       myBet,
       myBets,
-      recentHistory: game.recentHistory.slice(0, 12),
+      recentHistory: game.recentHistory.slice(0, 15),
       userBalance: auth ? auth.user.balance : null,
+      phaseStartTime: game.roundStartTime,
+      serverTime: Date.now(),
+      nextRound: game.nextRound
+        ? {
+            roundId: game.nextRound.roundId,
+            crashPoint: game.nextRound.crashPoint,
+            serverSeedHash: game.nextRound.serverSeedHash,
+          }
+        : undefined,
     });
   }
 
@@ -1045,6 +1242,12 @@ export async function handleEdgeApiRequest(
       config: {
         welcomeBonus: dbState.config.welcomeBonus,
         placeholderQrUrl: dbState.config.placeholderQrUrl,
+        logoUrl: dbState.config.logoUrl || '',
+        loadingLogoUrl: dbState.config.loadingLogoUrl || '',
+        depositBonusEnabled: dbState.config.depositBonusEnabled !== false,
+        depositBonusPercent: dbState.config.depositBonusPercent ?? 9,
+        minWithdrawalAmount: dbState.config.minWithdrawalAmount ?? 500,
+        referralBonus: dbState.config.referralBonus ?? 50,
       },
       transactions: dbState.transactions.filter((t) => t.userId === currentUser.id).slice(0, 100),
       requests: dbState.requests
@@ -1054,6 +1257,31 @@ export async function handleEdgeApiRequest(
           const { bankAccountNumber: _omit, ...rest } = r;
           return rest;
         }),
+    });
+  }
+
+  // 10b. GET /api/wallet/referrals
+  if (pathname === '/api/wallet/referrals' && req.method === 'GET') {
+    const auth = await getSessionFromReq(req, dbState, secret);
+    if (!auth) {
+      return jsonResponse({ error: 'Please sign in.' }, 401);
+    }
+    const currentUser = auth.user;
+    const myReferrals = (dbState.referrals || [])
+      .filter((r) => r.referrerId === currentUser.id)
+      .slice(0, 100);
+    const host = req.headers.get('host') || 'localhost:3000';
+    const proto = req.url.startsWith('https') ? 'https' : 'http';
+    const referralCode = currentUser.referralCode || currentUser.username.toUpperCase();
+    const referralLink = `${proto}://${host}/?ref=${encodeURIComponent(referralCode)}`;
+
+    return jsonResponse({
+      referralCode,
+      referralLink,
+      referralBonus: Number(dbState.config.referralBonus) || 50,
+      totalReferred: currentUser.referralCount || myReferrals.length,
+      totalEarnings: currentUser.referralEarnings || roundCoins(myReferrals.reduce((sum, r) => sum + r.rewardAmount, 0)),
+      history: myReferrals,
     });
   }
 
@@ -1082,12 +1310,20 @@ export async function handleEdgeApiRequest(
     }
 
     const dateCode = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const bonusEnabled = dbState.config.depositBonusEnabled !== false;
+    const bonusPercent = bonusEnabled ? Math.max(0, Number(dbState.config.depositBonusPercent) || 9) : 0;
+    const bonusAmount = bonusEnabled && bonusPercent > 0 ? roundCoins(cleanAmount * (bonusPercent / 100)) : 0;
+    const creditedAmount = roundCoins(cleanAmount + bonusAmount);
+
     const requestRecord: TransferRequestRecord = {
       id: `DEP-${dateCode}-${randomHex(3).toUpperCase()}`,
       userId: auth.user.id,
       username: auth.user.username,
       type: 'DEPOSIT',
       amount: cleanAmount,
+      bonusAmount,
+      bonusPercent,
+      creditedAmount,
       status: 'PENDING',
       userNote: (body.userNote || 'Deposit request').trim().slice(0, 140),
       adminNote: '',
@@ -1098,11 +1334,17 @@ export async function handleEdgeApiRequest(
     dbState.requests.unshift(requestRecord);
     await storage.save(dbState);
 
+    const bonusMsg = bonusAmount > 0
+      ? ` Includes ${bonusPercent}% deposit bonus (+₹${bonusAmount.toFixed(2)}). Total credited upon approval: ₹${creditedAmount.toFixed(2)}.`
+      : '';
+
     return jsonResponse(
       {
         request: requestRecord,
-        message:
-          'Deposit request submitted (Status: Pending). Balance will be updated after administrator approval.',
+        bonusAmount,
+        bonusPercent,
+        creditedAmount,
+        message: `Deposit request submitted (Status: Pending).${bonusMsg} Balance will be credited after administrator review.`,
       },
       201
     );
@@ -1135,9 +1377,10 @@ export async function handleEdgeApiRequest(
     const cleanIfsc = (body.ifscCode || '').trim().toUpperCase();
     const cleanUpi = (body.upiId || '').trim();
 
-    // 1. Minimum withdrawal amount ₹10
-    if (!Number.isFinite(cleanAmount) || cleanAmount < 10) {
-      return jsonResponse({ error: 'Minimum withdrawal amount is ₹10.00.' }, 400);
+    // 1. Minimum withdrawal amount configured by administrator (Server validated)
+    const minWithdrawal = Math.max(1, Number(dbState.config.minWithdrawalAmount) || 500);
+    if (!Number.isFinite(cleanAmount) || cleanAmount < minWithdrawal) {
+      return jsonResponse({ error: `Minimum withdrawal amount is ₹${minWithdrawal.toFixed(2)}.` }, 400);
     }
 
     // 2. Validate Mobile Number (10 digits)
@@ -1152,7 +1395,7 @@ export async function handleEdgeApiRequest(
 
     // 4. Validate Bank Account Number (9 to 18 digits)
     if (!cleanAccount || !/^\d{9,18}$/.test(cleanAccount)) {
-      return jsonResponse({ error: 'Bank Account Number must be between 9 and 18 digits.' });
+      return jsonResponse({ error: 'Bank Account Number must be between 9 and 18 digits.' }, 400);
     }
 
     // 5. Validate Confirm Bank Account Number
@@ -1493,20 +1736,40 @@ export async function handleEdgeApiRequest(
       reqRecord.processedAt = nowIso;
 
       if (reqRecord.type === 'DEPOSIT' && body.decision === 'APPROVED') {
+        const baseAmount = reqRecord.amount;
+        const bonusPercent = reqRecord.bonusPercent ?? (dbState.config.depositBonusEnabled !== false ? (Number(dbState.config.depositBonusPercent) || 9) : 0);
+        const bonusAmount = reqRecord.bonusAmount ?? (bonusPercent > 0 ? roundCoins(baseAmount * (bonusPercent / 100)) : 0);
+        const totalCredit = roundCoins(baseAmount + bonusAmount);
         const balanceBefore = targetUser.balance;
-        targetUser.balance = roundCoins(targetUser.balance + reqRecord.amount);
+        targetUser.balance = roundCoins(targetUser.balance + totalCredit);
+
         dbState.transactions.unshift({
           id: `tx_${Date.now()}_${randomHex(3)}`,
           userId: targetUser.id,
           username: targetUser.username,
           type: 'DEPOSIT_APPROVED',
-          amount: reqRecord.amount,
+          amount: baseAmount,
           balanceBefore,
-          balanceAfter: targetUser.balance,
+          balanceAfter: roundCoins(balanceBefore + baseAmount),
           referenceId: reqRecord.id,
           description: `Approved deposit request ${reqRecord.id}`,
           createdAt: nowIso,
         });
+
+        if (bonusAmount > 0) {
+          dbState.transactions.unshift({
+            id: `tx_${Date.now() + 1}_${randomHex(3)}`,
+            userId: targetUser.id,
+            username: targetUser.username,
+            type: 'DEPOSIT_BONUS',
+            amount: bonusAmount,
+            balanceBefore: roundCoins(balanceBefore + baseAmount),
+            balanceAfter: targetUser.balance,
+            referenceId: reqRecord.id,
+            description: `${bonusPercent}% deposit bonus for request ${reqRecord.id} (+₹${bonusAmount.toFixed(2)})`,
+            createdAt: nowIso,
+          });
+        }
       } else if (reqRecord.type === 'WITHDRAWAL' && body.decision === 'REJECTED') {
         const balanceBefore = targetUser.balance;
         targetUser.balance = roundCoins(targetUser.balance + reqRecord.amount);
@@ -1549,6 +1812,18 @@ export async function handleEdgeApiRequest(
         welcomeBonus?: number;
         placeholderQrUrl?: string;
         resetDefaultQr?: boolean;
+        logoUrl?: string;
+        resetDefaultLogo?: boolean;
+        loadingLogoUrl?: string;
+        resetDefaultLoadingLogo?: boolean;
+        depositBonusEnabled?: boolean;
+        depositBonusPercent?: number;
+        minWithdrawalAmount?: number;
+        referralBonus?: number;
+        houseEdgePercent?: number;
+        maxMultiplier?: number;
+        bettingDurationMs?: number;
+        crashedHoldMs?: number;
       };
       const changes: string[] = [];
 
@@ -1563,10 +1838,82 @@ export async function handleEdgeApiRequest(
 
       if (body.resetDefaultQr) {
         dbState.config.placeholderQrUrl = UPLOADED_QR_DATA_URI;
-        changes.push('QR code reset to uploaded QR image');
+        changes.push('QR code reset to default image');
       } else if (body.placeholderQrUrl !== undefined && body.placeholderQrUrl.trim().length > 0) {
         dbState.config.placeholderQrUrl = body.placeholderQrUrl.trim();
         changes.push('QR code updated');
+      }
+
+      if (body.resetDefaultLogo) {
+        dbState.config.logoUrl = '';
+        changes.push('Game logo reset to default');
+      } else if (body.logoUrl !== undefined) {
+        const cleanLogo = body.logoUrl.trim();
+        if (cleanLogo.length > 0 && !cleanLogo.startsWith('data:image/') && !cleanLogo.startsWith('http://') && !cleanLogo.startsWith('https://') && !cleanLogo.startsWith('/')) {
+          return jsonResponse({ error: 'Invalid game logo format. Please provide a valid image data URI or URL.' }, 400);
+        }
+        dbState.config.logoUrl = cleanLogo;
+        changes.push(cleanLogo ? 'Game logo updated' : 'Game logo cleared');
+      }
+
+      if (body.resetDefaultLoadingLogo) {
+        dbState.config.loadingLogoUrl = '';
+        changes.push('Loading screen logo reset to default');
+      } else if (body.loadingLogoUrl !== undefined) {
+        const cleanLoadingLogo = body.loadingLogoUrl.trim();
+        if (cleanLoadingLogo.length > 0 && !cleanLoadingLogo.startsWith('data:image/') && !cleanLoadingLogo.startsWith('http://') && !cleanLoadingLogo.startsWith('https://') && !cleanLoadingLogo.startsWith('/')) {
+          return jsonResponse({ error: 'Invalid loading logo format. Please provide a valid image data URI or URL.' }, 400);
+        }
+        dbState.config.loadingLogoUrl = cleanLoadingLogo;
+        changes.push(cleanLoadingLogo ? 'Loading screen logo updated' : 'Loading screen logo cleared');
+      }
+
+      if (body.depositBonusEnabled !== undefined) {
+        const val = Boolean(body.depositBonusEnabled);
+        changes.push(`depositBonusEnabled: ${dbState.config.depositBonusEnabled} -> ${val}`);
+        dbState.config.depositBonusEnabled = val;
+      }
+
+      if (body.depositBonusPercent !== undefined) {
+        const cleanPercent = Math.max(0, Math.min(100, Number(body.depositBonusPercent)));
+        changes.push(`depositBonusPercent: ${dbState.config.depositBonusPercent}% -> ${cleanPercent}%`);
+        dbState.config.depositBonusPercent = cleanPercent;
+      }
+
+      if (body.minWithdrawalAmount !== undefined) {
+        const cleanMin = roundCoins(Math.max(1, Math.min(100000, Number(body.minWithdrawalAmount))));
+        changes.push(`minWithdrawalAmount: ₹${dbState.config.minWithdrawalAmount} -> ₹${cleanMin}`);
+        dbState.config.minWithdrawalAmount = cleanMin;
+      }
+
+      if (body.referralBonus !== undefined) {
+        const cleanRefBonus = roundCoins(Math.max(0, Math.min(50000, Number(body.referralBonus))));
+        changes.push(`referralBonus: ₹${dbState.config.referralBonus ?? 50} -> ₹${cleanRefBonus}`);
+        dbState.config.referralBonus = cleanRefBonus;
+      }
+
+      if (body.houseEdgePercent !== undefined) {
+        const cleanEdge = Math.max(1, Math.min(15, Number(body.houseEdgePercent)));
+        changes.push(`houseEdgePercent: ${dbState.config.houseEdgePercent}% -> ${cleanEdge}%`);
+        dbState.config.houseEdgePercent = cleanEdge;
+      }
+
+      if (body.maxMultiplier !== undefined) {
+        const cleanCap = Math.max(10, Math.min(1000, Number(body.maxMultiplier)));
+        changes.push(`maxMultiplier: ${dbState.config.maxMultiplier}x -> ${cleanCap}x`);
+        dbState.config.maxMultiplier = cleanCap;
+      }
+
+      if (body.bettingDurationMs !== undefined) {
+        const cleanDuration = Math.max(2000, Math.min(15000, Number(body.bettingDurationMs)));
+        changes.push(`bettingDurationMs: ${dbState.config.bettingDurationMs}ms -> ${cleanDuration}ms`);
+        dbState.config.bettingDurationMs = cleanDuration;
+      }
+
+      if (body.crashedHoldMs !== undefined) {
+        const cleanHold = Math.max(1500, Math.min(10000, Number(body.crashedHoldMs)));
+        changes.push(`crashedHoldMs: ${dbState.config.crashedHoldMs}ms -> ${cleanHold}ms`);
+        dbState.config.crashedHoldMs = cleanHold;
       }
 
       const nowIso = new Date().toISOString();
@@ -1587,6 +1934,94 @@ export async function handleEdgeApiRequest(
       return jsonResponse({
         success: true,
         config: dbState.config,
+      });
+    }
+
+    if (pathname === '/api/admin/game-status' && req.method === 'GET') {
+      const live = await syncGameClock(dbState);
+      if (live.mutated) await storage.save(dbState);
+      const game = dbState.game;
+      const now = Date.now();
+
+      return jsonResponse({
+        roundId: game.roundId,
+        phase: live.phase,
+        statusLabel:
+          live.phase === 'BETTING' ? 'Waiting' : live.phase === 'FLYING' ? 'Flying' : 'Crashed',
+        multiplier: live.multiplier,
+        crashPoint: game.crashPoint,
+        countdownMs: live.countdownMs,
+        phaseStartTime: game.roundStartTime,
+        serverTime: now,
+        activeBetsCount: game.bets.length,
+        totalBetPool: roundCoins(game.bets.reduce((acc, b) => acc + b.amount, 0)),
+        serverSeedHash: game.serverSeedHash,
+        serverSeed: live.phase === 'CRASHED' ? game.serverSeed : undefined,
+        nextRound: game.nextRound
+          ? {
+              roundId: game.nextRound.roundId,
+              crashPoint: game.nextRound.crashPoint,
+              serverSeedHash: game.nextRound.serverSeedHash,
+            }
+          : undefined,
+        config: {
+          houseEdgePercent: Number(dbState.config.houseEdgePercent) || 3,
+          maxMultiplier: Number(dbState.config.maxMultiplier) || 250,
+          bettingDurationMs: Number(dbState.config.bettingDurationMs) || 5000,
+          crashedHoldMs: Number(dbState.config.crashedHoldMs) || 3500,
+        },
+        recentHistory: game.recentHistory.slice(0, 15),
+      });
+    }
+
+    if (pathname === '/api/admin/flight/crash' && req.method === 'POST') {
+      const live = await syncGameClock(dbState);
+      if (live.phase !== 'FLYING') {
+        if (live.mutated) await storage.save(dbState);
+        return jsonResponse(
+          {
+            error: `Cannot end flight: round is currently ${live.phase.toLowerCase()} (only active FLYING rounds can be ended).`,
+            phase: live.phase,
+          },
+          400
+        );
+      }
+
+      const crashMult = Math.max(1.0, live.multiplier);
+      dbState.game.crashPoint = crashMult;
+      const nowIso = new Date().toISOString();
+
+      dbState.game.recentHistory.unshift({
+        roundId: dbState.game.roundId,
+        crashPoint: crashMult,
+        serverSeedHash: dbState.game.serverSeedHash,
+        serverSeed: dbState.game.serverSeed,
+        completedAt: nowIso,
+      });
+      if (dbState.game.recentHistory.length > 20) {
+        dbState.game.recentHistory = dbState.game.recentHistory.slice(0, 20);
+      }
+
+      dbState.auditLogs.unshift({
+        id: `aud_${Date.now()}_${randomHex(3)}`,
+        adminId: adminUser.id,
+        adminUsername: adminUser.username,
+        action: 'ADMIN_END_FLIGHT',
+        targetUsername: null,
+        details: `Administrator manually ended flight for round ${dbState.game.roundId} at ${crashMult.toFixed(2)}x.`,
+        createdAt: nowIso,
+      });
+
+      // Advance round start time so it sits in crashed phase for crashedHoldMs
+      const flightDuration = getFlightDurationMs(crashMult);
+      dbState.game.roundStartTime = Date.now() - (dbState.game.bettingDurationMs + flightDuration);
+
+      await storage.save(dbState);
+      return jsonResponse({
+        success: true,
+        roundId: dbState.game.roundId,
+        crashedAtMultiplier: crashMult,
+        phase: 'CRASHED',
       });
     }
   }

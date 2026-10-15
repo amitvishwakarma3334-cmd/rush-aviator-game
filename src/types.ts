@@ -5,6 +5,10 @@ export interface User {
   status: 'active' | 'suspended';
   balance: number;
   welcomeBonusAwarded: boolean;
+  referralCode?: string;
+  referredBy?: string | null;
+  referralCount?: number;
+  referralEarnings?: number;
   createdAt: string;
 }
 
@@ -53,6 +57,15 @@ export interface GameStateResponse {
   myBets: MyActiveBet[];
   recentHistory: CrashRoundHistoryItem[];
   userBalance: number | null;
+  phaseStartTime?: number;
+  serverTime?: number;
+  bettingDurationMs?: number;
+  crashedHoldMs?: number;
+  nextRound?: {
+    roundId: string;
+    serverSeedHash: string;
+    crashPoint?: number;
+  } | null;
 }
 
 export interface TransactionRecord {
@@ -64,9 +77,11 @@ export interface TransactionRecord {
     | 'GAME_BET'
     | 'GAME_WIN'
     | 'DEPOSIT_APPROVED'
+    | 'DEPOSIT_BONUS'
     | 'WITHDRAWAL_RESERVE'
     | 'WITHDRAWAL_REFUND'
-    | 'ADMIN_ADJUSTMENT';
+    | 'ADMIN_ADJUSTMENT'
+    | 'REFERRAL_REWARD';
   amount: number;
   balanceBefore: number;
   balanceAfter: number;
@@ -115,9 +130,11 @@ export interface AppConfigRecord {
   welcomeBonus: number;
   placeholderQrUrl: string;
   logoUrl?: string;
+  loadingLogoUrl?: string;
   depositBonusEnabled?: boolean;
   depositBonusPercent?: number;
   minWithdrawalAmount?: number;
+  referralBonus?: number;
   houseEdgePercent?: number;
   maxMultiplier?: number;
   bettingDurationMs?: number;
@@ -132,9 +149,11 @@ export interface SystemStatusResponse {
   welcomeBonus: number;
   placeholderQrUrl?: string;
   logoUrl?: string;
+  loadingLogoUrl?: string;
   depositBonusEnabled?: boolean;
   depositBonusPercent?: number;
   minWithdrawalAmount?: number;
+  referralBonus?: number;
   totalUsers: number;
 }
 
@@ -145,6 +164,8 @@ export interface AdminGameStatusResponse {
   multiplier: number;
   crashPoint: number;
   countdownMs: number;
+  phaseStartTime?: number;
+  serverTime?: number;
   activeBetsCount: number;
   totalBetPool: number;
   serverSeedHash: string;
@@ -161,4 +182,24 @@ export interface AdminGameStatusResponse {
     crashedHoldMs: number;
   };
   recentHistory: CrashRoundHistoryItem[];
+}
+
+export interface ReferralRecord {
+  id: string;
+  referrerId: string;
+  referrerUsername: string;
+  referredUserId: string;
+  referredUsername: string;
+  rewardAmount: number;
+  status: 'COMPLETED';
+  createdAt: string;
+}
+
+export interface ReferralSummaryResponse {
+  referralCode: string;
+  referralLink: string;
+  referralBonus: number;
+  totalReferred: number;
+  totalEarnings: number;
+  history: ReferralRecord[];
 }

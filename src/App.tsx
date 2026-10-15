@@ -65,6 +65,7 @@ export default function App() {
   const [usernameInput, setUsernameInput] = useState<string>('');
   const [passwordInput, setPasswordInput] = useState<string>('');
   const [confirmPasswordInput, setConfirmPasswordInput] = useState<string>('');
+  const [referralCodeInput, setReferralCodeInput] = useState<string>('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState<boolean>(false);
 
@@ -85,10 +86,19 @@ export default function App() {
     return initial;
   });
 
-  // Check current session and system status on load
+  // Check current session, system status, and referral query param on load
   useEffect(() => {
     async function bootstrap() {
       try {
+        if (typeof window !== 'undefined') {
+          const params = new URLSearchParams(window.location.search);
+          const refParam = params.get('ref') || params.get('referral');
+          if (refParam && refParam.trim().length >= 3) {
+            setReferralCodeInput(refParam.trim().toUpperCase());
+            setAuthMode('signup');
+          }
+        }
+
         const [meRes, sysRes] = await Promise.all([
           apiFetch('/api/auth/me'),
           apiFetch('/api/system/status'),
@@ -176,12 +186,14 @@ export default function App() {
     setAuthSubmitting(true);
     try {
       const endpoint = authMode === 'signup' ? '/api/auth/signup' : '/api/auth/login';
+      const cleanRefCode = referralCodeInput.trim().toUpperCase();
       const payload =
         authMode === 'signup'
           ? {
               username: cleanUsername,
               password: passwordInput,
               confirmPassword: confirmPasswordInput,
+              referralCode: cleanRefCode || undefined,
             }
           : {
               username: cleanUsername,
@@ -378,6 +390,7 @@ export default function App() {
           isReady={authChecked}
           onFinish={() => setSplashFinished(true)}
           minDisplayTimeMs={1500}
+          customLogoUrl={systemStatus?.loadingLogoUrl || systemStatus?.logoUrl}
         />
       )}
       <div className="min-h-screen flex flex-col bg-[#0B0E14] text-slate-100">
@@ -669,21 +682,42 @@ export default function App() {
                   </div>
 
                   {authMode === 'signup' && (
-                    <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                        Confirm Password
-                      </label>
-                      <input
-                        type="password"
-                        required
-                        minLength={6}
-                        autoComplete="new-password"
-                        value={confirmPasswordInput}
-                        onChange={(e) => setConfirmPasswordInput(e.target.value)}
-                        placeholder="Confirm your password"
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#0A0D14] border border-slate-700 text-white text-sm focus:outline-none focus:border-rose-500"
-                      />
-                    </div>
+                    <>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                          Confirm Password
+                        </label>
+                        <input
+                          type="password"
+                          required
+                          minLength={6}
+                          autoComplete="new-password"
+                          value={confirmPasswordInput}
+                          onChange={(e) => setConfirmPasswordInput(e.target.value)}
+                          placeholder="Confirm your password"
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#0A0D14] border border-slate-700 text-white text-sm focus:outline-none focus:border-rose-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="flex items-center justify-between text-xs font-medium text-slate-300 mb-1.5">
+                          <span>Referral Code (Optional)</span>
+                          {referralCodeInput && (
+                            <span className="text-[10px] text-emerald-400 font-semibold font-mono-tabular">
+                              Invite Applied
+                            </span>
+                          )}
+                        </label>
+                        <input
+                          type="text"
+                          maxLength={16}
+                          value={referralCodeInput}
+                          onChange={(e) => setReferralCodeInput(e.target.value.toUpperCase())}
+                          placeholder="e.g. AVI-XYZ123"
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#0A0D14] border border-slate-700 text-white text-sm font-mono-tabular uppercase focus:outline-none focus:border-rose-500 placeholder:normal-case placeholder:font-sans"
+                        />
+                      </div>
+                    </>
                   )}
 
                   {authError && (

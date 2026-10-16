@@ -741,7 +741,24 @@ function syncGameClock(): void {
       gameEngine.phaseStartTime = now;
       gameEngine.bettingDurationMs = Math.max(2000, Number(dbState.config.bettingDurationMs) || 5000);
       gameEngine.crashedHoldMs = Math.max(1500, Number(dbState.config.crashedHoldMs) || 3500);
-      gameEngine.bets = [];
+      // Commit queued bets into active bets for this new round
+      const activeFromQueued: ActiveRoundBet[] = [];
+      for (const q of gameEngine.queuedBets) {
+        if (q.status === 'QUEUED') {
+          activeFromQueued.push({
+            betId: q.committedBetId || `bet_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+            userId: q.userId,
+            username: q.username,
+            slotId: q.slotId || 'slot-1',
+            amount: q.amount,
+            autoCashout: q.autoCashout,
+            cashedOut: false,
+            cashoutMultiplier: null,
+            payout: null,
+          });
+        }
+      }
+      gameEngine.bets = activeFromQueued;
       gameEngine.queuedBets = [];
     }
   }
@@ -1222,6 +1239,22 @@ async function startServer() {
     }));
     const myBet = myBets[0] || null;
 
+    const userQueued = auth
+      ? gameEngine.queuedBets.filter((q) => q.userId === auth.user.id && q.status === 'QUEUED')
+      : [];
+    const myQueuedBets: QueuedRoundBet[] = userQueued.map((q) => ({
+      queueId: q.queueId,
+      userId: q.userId,
+      username: q.username,
+      slotId: q.slotId || 'slot-1',
+      amount: q.amount,
+      autoCashout: q.autoCashout,
+      targetRoundId: q.targetRoundId,
+      status: q.status,
+      createdAt: q.createdAt,
+      committedBetId: q.committedBetId,
+    }));
+
     res.json({
       roundId: gameEngine.roundId,
       phase: gameEngine.phase,
@@ -1249,6 +1282,8 @@ async function startServer() {
       })),
       myBet,
       myBets,
+      myQueuedBets,
+      queuedBetsCount: gameEngine.queuedBets.filter((q) => q.status === 'QUEUED').length,
       recentHistory: gameEngine.recentHistory.slice(0, 12),
       userBalance: auth ? auth.user.balance : null,
     });
@@ -1289,7 +1324,61 @@ async function startServer() {
 
     await withLock(async () => {
       if (gameEngine.phase !== 'BETTING') {
-        res.status(400).json({ error: 'Bets can only be placed during the pre-flight countdown phase.' });
+        // When outside BETTING countdown, queue the bet for next round
+        const existingIndex = gameEngine.queuedBets.findIndex(
+          (q) => q.userId === currentUser.id && (q.slotId || 'slot-1') === normalizedSlotId && q.status === 'QUEUED'
+        );
+
+        let balanceBefore = currentUser.balance;
+        if (existingIndex !== -1) {
+          const prevQ = gameEngine.queuedBets[existingIndex];
+          currentUser.balance = roundCoins(currentUser.balance + prevQ.amount);
+          gameEngine.queuedBets.splice(existingIndex, 1);
+          balanceBefore = currentUser.balance;
+        }
+
+        if (currentUser.balance < betAmount) {
+          res.status(400).json({ error: `Insufficient balance (Available: ₹${currentUser.balance.toFixed(2)}).` });
+          return;
+        }
+
+        currentUser.balance = roundCoins(currentUser.balance - betAmount);
+        const targetRoundId = gameEngine.nextRound.roundId;
+        const queuedBet: QueuedRoundBet = {
+          queueId: `queue_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+          userId: currentUser.id,
+          username: currentUser.username,
+          slotId: normalizedSlotId,
+          amount: betAmount,
+          autoCashout: parsedAutoCashout,
+          targetRoundId,
+          status: 'QUEUED',
+          createdAt: new Date().toISOString(),
+          committedBetId: `bet_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+        };
+        gameEngine.queuedBets.push(queuedBet);
+
+        const tx: TransactionRecord = {
+          id: `tx_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+          userId: currentUser.id,
+          username: currentUser.username,
+          type: 'QUEUED_BET',
+          amount: -betAmount,
+          balanceBefore,
+          balanceAfter: currentUser.balance,
+          referenceId: targetRoundId,
+          description: `Queued next-round bet for round ${targetRoundId} (${normalizedSlotId})`,
+          createdAt: new Date().toISOString(),
+        };
+        dbState.transactions.unshift(tx);
+        await persistChange({ user: currentUser, transaction: tx });
+
+        res.json({
+          success: true,
+          queued: true,
+          balance: currentUser.balance,
+          queuedBet,
+        });
         return;
       }
 
@@ -1342,6 +1431,142 @@ async function startServer() {
         success: true,
         balance: currentUser.balance,
         bet: newBet,
+      });
+    });
+  });
+
+  app.post('/api/game/queue-bet', requireUser, async (req: Request, res: Response) => {
+    const currentUser = (req as Request & { currentUser: UserRecord }).currentUser;
+    if (currentUser.role !== 'user') {
+      res.status(403).json({ error: 'Administrator accounts cannot place bets. Please sign in with a player account.' });
+      return;
+    }
+
+    const { amount, autoCashout, slotId } = req.body as {
+      amount?: number;
+      autoCashout?: number | null;
+      slotId?: string;
+    };
+    const betAmount = roundCoins(Number(amount));
+    const normalizedSlotId = slotId ? String(slotId).trim() : 'slot-1';
+
+    if (!Number.isFinite(betAmount) || betAmount < 1) {
+      res.status(400).json({ error: 'Minimum bet amount is ₹1.00.' });
+      return;
+    }
+    if (betAmount > 10000) {
+      res.status(400).json({ error: 'Maximum bet per slot is ₹10,000.00.' });
+      return;
+    }
+
+    let parsedAutoCashout: number | null = null;
+    if (autoCashout !== undefined && autoCashout !== null && Number(autoCashout) > 0) {
+      parsedAutoCashout = roundCoins(Number(autoCashout));
+      if (parsedAutoCashout < 1.1 || parsedAutoCashout > 200) {
+        res.status(400).json({ error: 'Auto cashout multiplier must be between 1.10x and 200.00x.' });
+        return;
+      }
+    }
+
+    await withLock(async () => {
+      const existingIndex = gameEngine.queuedBets.findIndex(
+        (q) => q.userId === currentUser.id && (q.slotId || 'slot-1') === normalizedSlotId && q.status === 'QUEUED'
+      );
+
+      let balanceBefore = currentUser.balance;
+      if (existingIndex !== -1) {
+        const prevQ = gameEngine.queuedBets[existingIndex];
+        currentUser.balance = roundCoins(currentUser.balance + prevQ.amount);
+        gameEngine.queuedBets.splice(existingIndex, 1);
+        balanceBefore = currentUser.balance;
+      }
+
+      if (currentUser.balance < betAmount) {
+        res.status(400).json({ error: `Insufficient balance (Available: ₹${currentUser.balance.toFixed(2)}).` });
+        return;
+      }
+
+      currentUser.balance = roundCoins(currentUser.balance - betAmount);
+      const targetRoundId = gameEngine.nextRound.roundId;
+      const queuedBet: QueuedRoundBet = {
+        queueId: `queue_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+        userId: currentUser.id,
+        username: currentUser.username,
+        slotId: normalizedSlotId,
+        amount: betAmount,
+        autoCashout: parsedAutoCashout,
+        targetRoundId,
+        status: 'QUEUED',
+        createdAt: new Date().toISOString(),
+        committedBetId: `bet_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+      };
+      gameEngine.queuedBets.push(queuedBet);
+
+      const tx: TransactionRecord = {
+        id: `tx_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+        userId: currentUser.id,
+        username: currentUser.username,
+        type: 'QUEUED_BET',
+        amount: -betAmount,
+        balanceBefore,
+        balanceAfter: currentUser.balance,
+        referenceId: targetRoundId,
+        description: `Queued next-round bet for round ${targetRoundId} (${normalizedSlotId})`,
+        createdAt: new Date().toISOString(),
+      };
+      dbState.transactions.unshift(tx);
+      await persistChange({ user: currentUser, transaction: tx });
+
+      res.json({
+        success: true,
+        queued: true,
+        balance: currentUser.balance,
+        queuedBet,
+      });
+    });
+  });
+
+  app.post('/api/game/cancel-queued-bet', requireUser, async (req: Request, res: Response) => {
+    const currentUser = (req as Request & { currentUser: UserRecord }).currentUser;
+    const { slotId } = req.body as { slotId?: string };
+    const normalizedSlotId = slotId ? String(slotId).trim() : 'slot-1';
+
+    await withLock(async () => {
+      const existingIndex = gameEngine.queuedBets.findIndex(
+        (q) => q.userId === currentUser.id && (q.slotId || 'slot-1') === normalizedSlotId && q.status === 'QUEUED'
+      );
+
+      if (existingIndex === -1) {
+        res.status(404).json({ error: `No active queued bet found for ${normalizedSlotId}.` });
+        return;
+      }
+
+      const queuedBet = gameEngine.queuedBets[existingIndex];
+      gameEngine.queuedBets.splice(existingIndex, 1);
+
+      const balanceBefore = currentUser.balance;
+      currentUser.balance = roundCoins(currentUser.balance + queuedBet.amount);
+
+      const tx: TransactionRecord = {
+        id: `tx_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+        userId: currentUser.id,
+        username: currentUser.username,
+        type: 'QUEUED_BET_REFUND',
+        amount: queuedBet.amount,
+        balanceBefore,
+        balanceAfter: currentUser.balance,
+        referenceId: queuedBet.targetRoundId,
+        description: `Refunded cancelled queued bet for round ${queuedBet.targetRoundId} (${normalizedSlotId})`,
+        createdAt: new Date().toISOString(),
+      };
+      dbState.transactions.unshift(tx);
+      await persistChange({ user: currentUser, transaction: tx });
+
+      res.json({
+        success: true,
+        cancelled: true,
+        balance: currentUser.balance,
+        slotId: normalizedSlotId,
       });
     });
   });

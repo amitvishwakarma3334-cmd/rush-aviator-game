@@ -24,6 +24,7 @@ class SoundController {
   private currentRoundId: string | null = null;
   private currentPhase: 'BETTING' | 'FLYING' | 'CRASHED' = 'BETTING';
   private flightStartedRoundId: string | null = null;
+  private crashPlayedRoundId: string | null = null;
   private isPlayingFlight: boolean = false;
   private audioSourceUrl: string = '/assets/flight-audio.mp3';
   private listenersAttached: boolean = false;
@@ -236,8 +237,18 @@ class SoundController {
   // Synchronizes audio playback strictly with authoritative game round state
   public syncWithGameState(phase: 'BETTING' | 'FLYING' | 'CRASHED', roundId: string): void {
     const prevPhase = this.currentPhase;
+    const isNewRound = this.currentRoundId !== roundId;
+
+    if (isNewRound) {
+      this.currentRoundId = roundId;
+      // If client connects or refreshes into an already CRASHED round,
+      // mark crash as handled so we never play a stale crash sound.
+      if (phase === 'CRASHED') {
+        this.crashPlayedRoundId = roundId;
+      }
+    }
+
     this.currentPhase = phase;
-    this.currentRoundId = roundId;
 
     if (phase === 'FLYING') {
       // Start flight sound ONLY when flight actually starts for this specific round
@@ -246,14 +257,24 @@ class SoundController {
         this.startFlightAudio();
       }
     } else {
-      // Clear flight round flag so the next round can trigger cleanly
-      this.flightStartedRoundId = null;
       // Audio must stop immediately when plane crashes or round is in betting countdown
       if (this.isPlayingFlight || prevPhase === 'FLYING') {
         this.stopFlightAudio();
       }
-      if (prevPhase === 'FLYING' && phase === 'CRASHED') {
-        this.playCrash();
+
+      // CRASH SOUND SPEC:
+      // The crash sound must play ONLY when the plane actually crashes.
+      // Never play during takeoff, normal flight, or betting countdown.
+      // Play it exactly once per round when authoritative game state confirms the crash.
+      if (phase === 'CRASHED') {
+        if (this.crashPlayedRoundId !== roundId && prevPhase === 'FLYING') {
+          this.crashPlayedRoundId = roundId;
+          this.playCrash();
+        }
+      }
+
+      if (phase === 'BETTING') {
+        this.flightStartedRoundId = null;
       }
     }
   }

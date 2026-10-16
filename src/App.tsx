@@ -301,7 +301,8 @@ export default function App() {
     }));
 
     try {
-      const res = await apiFetch('/api/game/bet', {
+      const endpoint = gameState.phase === 'BETTING' ? '/api/game/bet' : '/api/game/queue-bet';
+      const res = await apiFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ amount: amountNum, autoCashout: autoVal, slotId }),
@@ -315,19 +316,82 @@ export default function App() {
       } else {
         soundFx.playBetPlaced();
         setUser((prev) => (prev ? { ...prev, balance: data.balance } : prev));
+        if (data.queued && data.queuedBet) {
+          setGameState((prev) => {
+            const oldQueued = (prev.myQueuedBets || []).filter((q) => (q.slotId || 'slot-1') !== slotId);
+            return {
+              ...prev,
+              myQueuedBets: [...oldQueued, data.queuedBet],
+            };
+          });
+          setSlotStates((prev) => ({
+            ...prev,
+            [slotId]: {
+              ...prev[slotId],
+              error: null,
+              success: `Next Round Bet: ₹${amountNum.toFixed(2)} confirmed on ${slotId.toUpperCase()}`,
+            },
+          }));
+        } else {
+          setSlotStates((prev) => ({
+            ...prev,
+            [slotId]: {
+              ...prev[slotId],
+              error: null,
+              success: `Bet of ₹${amountNum.toFixed(2)} placed on ${slotId.toUpperCase()} for round ${gameState.roundId}`,
+            },
+          }));
+        }
+      }
+    } catch {
+      setSlotStates((prev) => ({
+        ...prev,
+        [slotId]: { ...prev[slotId], error: 'Network error placing bet.' },
+      }));
+    } finally {
+      setSlotStates((prev) => ({
+        ...prev,
+        [slotId]: { ...prev[slotId], isPending: false },
+      }));
+    }
+  };
+
+  const handleCancelQueuedBet = async (slotId: string) => {
+    setSlotStates((prev) => ({
+      ...prev,
+      [slotId]: { ...prev[slotId], isPending: true, error: null, success: null },
+    }));
+    try {
+      const res = await apiFetch('/api/game/cancel-queued-bet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slotId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setSlotStates((prev) => ({
+          ...prev,
+          [slotId]: { ...prev[slotId], error: data.error || 'Could not cancel queued bet.' },
+        }));
+      } else {
+        setUser((prev) => (prev ? { ...prev, balance: data.balance } : prev));
+        setGameState((prev) => ({
+          ...prev,
+          myQueuedBets: (prev.myQueuedBets || []).filter((q) => (q.slotId || 'slot-1') !== slotId),
+        }));
         setSlotStates((prev) => ({
           ...prev,
           [slotId]: {
             ...prev[slotId],
             error: null,
-            success: `Bet of ₹${amountNum.toFixed(2)} placed on ${slotId.toUpperCase()} for round ${gameState.roundId}`,
+            success: `Queued bet on ${slotId.toUpperCase()} cancelled and refunded.`,
           },
         }));
       }
     } catch {
       setSlotStates((prev) => ({
         ...prev,
-        [slotId]: { ...prev[slotId], error: 'Network error placing bet.' },
+        [slotId]: { ...prev[slotId], error: 'Network error cancelling queued bet.' },
       }));
     } finally {
       setSlotStates((prev) => ({
@@ -803,6 +867,13 @@ export default function App() {
 
                   const allUserBets = gameState.myBets || (gameState.myBet ? [gameState.myBet] : []);
                   const slotBet = allUserBets.find((b) => (b.slotId || 'slot-1') === slot.id) || null;
+                  const allQueuedBets = gameState.myQueuedBets || [];
+                  const slotQueuedBet = allQueuedBets.find((q) => (q.slotId || 'slot-1') === slot.id && q.status === 'QUEUED') || null;
+
+                  const isInputDisabled =
+                    Boolean(slotBet && !slotBet.cashedOut && gameState.phase === 'FLYING') ||
+                    Boolean(slotBet && gameState.phase === 'BETTING') ||
+                    slotState.isPending;
 
                   return (
                     <div
@@ -835,6 +906,10 @@ export default function App() {
                                 Placed
                               </span>
                             )
+                          ) : slotQueuedBet ? (
+                            <span className="text-[9px] sm:text-[11px] font-bold text-amber-300 font-mono-tabular">
+                              Next: ₹{slotQueuedBet.amount.toFixed(2)}
+                            </span>
                           ) : (
                             <span className="text-[9px] sm:text-[11px] text-slate-400 font-mono-tabular truncate block">
                               ₹{user.balance.toFixed(2)}
@@ -842,6 +917,31 @@ export default function App() {
                           )}
                         </div>
                       </div>
+
+                      {/* Queued Next-Round Bet Telemetry Banner */}
+                      {slotQueuedBet && (
+                        <div className="p-2 sm:p-2.5 rounded-lg sm:rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-1.5">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
+                            <span className="text-[10px] sm:text-xs font-bold text-amber-300 truncate">
+                              Next Round Bet: ₹{slotQueuedBet.amount.toFixed(2)}
+                            </span>
+                            {slotQueuedBet.autoCashout && (
+                              <span className="text-[9px] sm:text-[10px] font-mono-tabular text-amber-400/80 shrink-0">
+                                @{slotQueuedBet.autoCashout.toFixed(2)}x
+                              </span>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            disabled={slotState.isPending}
+                            onClick={() => handleCancelQueuedBet(slot.id)}
+                            className="px-2 py-0.5 rounded bg-rose-600/80 hover:bg-rose-600 text-white text-[9px] sm:text-[10px] font-semibold transition-colors cursor-pointer shrink-0"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
 
                       {/* Controls: Amount Input + Presets */}
                       <div className="space-y-1.5 sm:space-y-3">
@@ -852,7 +952,7 @@ export default function App() {
                               min="1"
                               max="10000"
                               step="1"
-                              disabled={Boolean(slotBet) || slotState.isPending}
+                              disabled={isInputDisabled}
                               value={slotState.amount}
                               onChange={(e) =>
                                 setSlotStates((prev) => ({
@@ -869,7 +969,7 @@ export default function App() {
                               <button
                                 key={preset}
                                 type="button"
-                                disabled={Boolean(slotBet) || slotState.isPending}
+                                disabled={isInputDisabled}
                                 onClick={() =>
                                   setSlotStates((prev) => ({
                                     ...prev,
@@ -891,7 +991,7 @@ export default function App() {
                             ))}
                             <button
                               type="button"
-                              disabled={Boolean(slotBet) || slotState.isPending}
+                              disabled={isInputDisabled}
                               onClick={() =>
                                 setSlotStates((prev) => ({
                                   ...prev,
@@ -914,7 +1014,7 @@ export default function App() {
                           <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer select-none truncate">
                             <input
                               type="checkbox"
-                              disabled={Boolean(slotBet) || slotState.isPending}
+                              disabled={isInputDisabled}
                               checked={slotState.autoCashoutEnabled}
                               onChange={(e) =>
                                 setSlotStates((prev) => ({
@@ -937,7 +1037,7 @@ export default function App() {
                                 min="1.10"
                                 max="200"
                                 step="0.10"
-                                disabled={Boolean(slotBet) || slotState.isPending}
+                                disabled={isInputDisabled}
                                 value={slotState.autoCashout}
                                 onChange={(e) =>
                                   setSlotStates((prev) => ({
@@ -971,14 +1071,26 @@ export default function App() {
                             </span>
                           </button>
                         ) : slotBet && slotBet.cashedOut ? (
-                          <div className="w-full py-2 sm:py-3 px-2 sm:px-4 rounded-lg sm:rounded-xl bg-emerald-950/60 border border-emerald-700/60 text-emerald-300 flex flex-col items-center justify-center text-center leading-tight">
-                            <div className="flex items-center gap-1 text-[10px] sm:text-xs font-bold truncate">
-                              <CheckCircle2 className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
-                              <span className="truncate">AT {slotBet.cashoutMultiplier?.toFixed(2)}x</span>
+                          <div className="space-y-2">
+                            <div className="w-full py-2 sm:py-2.5 px-2 sm:px-4 rounded-lg sm:rounded-xl bg-emerald-950/60 border border-emerald-700/60 text-emerald-300 flex flex-col items-center justify-center text-center leading-tight">
+                              <div className="flex items-center gap-1 text-[10px] sm:text-xs font-bold truncate">
+                                <CheckCircle2 className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
+                                <span className="truncate">AT {slotBet.cashoutMultiplier?.toFixed(2)}x</span>
+                              </div>
+                              <div className="text-[10px] sm:text-xs font-mono-tabular mt-0.5 font-semibold">
+                                Won ₹{slotBet.payout?.toFixed(2)}
+                              </div>
                             </div>
-                            <div className="text-[10px] sm:text-xs font-mono-tabular mt-0.5 font-semibold">
-                              Won ₹{slotBet.payout?.toFixed(2)}
-                            </div>
+                            {!slotQueuedBet ? (
+                              <button
+                                type="button"
+                                disabled={slotState.isPending}
+                                onClick={() => handlePlaceSlotBet(slot.id)}
+                                className="w-full py-2 sm:py-2.5 px-2 sm:px-4 rounded-lg sm:rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-display font-bold text-xs sm:text-sm tracking-tight shadow transition-transform active:scale-[0.99] cursor-pointer flex items-center justify-center gap-1"
+                              >
+                                <span>BET FOR NEXT ROUND (₹{Number(slotState.amount || 0).toFixed(2)})</span>
+                              </button>
+                            ) : null}
                           </div>
                         ) : slotBet && gameState.phase === 'BETTING' ? (
                           <div className="w-full py-2 sm:py-3 px-2 sm:px-4 rounded-lg sm:rounded-xl bg-emerald-950/50 border border-emerald-700/50 text-emerald-300 flex flex-col items-center justify-center text-center leading-tight">
@@ -987,24 +1099,50 @@ export default function App() {
                               ₹{slotBet.amount.toFixed(2)}
                             </span>
                           </div>
+                        ) : gameState.phase === 'BETTING' ? (
+                          <button
+                            type="button"
+                            disabled={slotState.isPending}
+                            onClick={() => handlePlaceSlotBet(slot.id)}
+                            className="w-full py-2.5 sm:py-3.5 px-2 sm:px-4 rounded-lg sm:rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-display font-extrabold text-xs sm:text-sm tracking-tight shadow-lg transition-transform active:scale-[0.99] cursor-pointer flex flex-col items-center justify-center leading-tight"
+                          >
+                            <span>PLACE BET</span>
+                            <span className="text-[9px] sm:text-xs font-mono-tabular font-normal mt-0.5 opacity-90 truncate">
+                              ₹{Number(slotState.amount || 0).toFixed(2)}
+                            </span>
+                          </button>
+                        ) : slotQueuedBet ? (
+                          <div className="flex items-center gap-1.5 w-full">
+                            <button
+                              type="button"
+                              disabled={slotState.isPending}
+                              onClick={() => handlePlaceSlotBet(slot.id)}
+                              className="flex-1 py-2 sm:py-2.5 px-2 rounded-lg sm:rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-display font-bold text-[10px] sm:text-xs tracking-tight shadow transition-transform active:scale-[0.99] cursor-pointer flex flex-col items-center justify-center leading-tight"
+                            >
+                              <span>UPDATE NEXT BET</span>
+                              <span className="font-mono-tabular text-[9px] sm:text-[10px] opacity-90">
+                                Set to ₹{Number(slotState.amount || 0).toFixed(2)}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={slotState.isPending}
+                              onClick={() => handleCancelQueuedBet(slot.id)}
+                              className="py-2 sm:py-2.5 px-3 rounded-lg sm:rounded-xl bg-rose-600/80 hover:bg-rose-600 text-white font-bold text-xs sm:text-sm transition-colors cursor-pointer shrink-0"
+                            >
+                              Cancel
+                            </button>
+                          </div>
                         ) : (
                           <button
                             type="button"
-                            disabled={gameState.phase !== 'BETTING' || slotState.isPending}
+                            disabled={slotState.isPending}
                             onClick={() => handlePlaceSlotBet(slot.id)}
-                            className={`w-full py-2.5 sm:py-3.5 px-2 sm:px-4 rounded-lg sm:rounded-xl font-display font-extrabold text-xs sm:text-sm tracking-tight transition-all flex flex-col items-center justify-center leading-tight ${
-                              gameState.phase === 'BETTING'
-                                ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg cursor-pointer'
-                                : 'bg-slate-800/80 text-slate-400 cursor-not-allowed border border-slate-700'
-                            }`}
+                            className="w-full py-2.5 sm:py-3.5 px-2 sm:px-4 rounded-lg sm:rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-display font-extrabold text-xs sm:text-sm tracking-tight shadow-lg transition-transform active:scale-[0.99] cursor-pointer flex flex-col items-center justify-center leading-tight"
                           >
-                            <span>
-                              {gameState.phase === 'BETTING' ? 'PLACE BET' : 'FLYING'}
-                            </span>
+                            <span>BET FOR NEXT ROUND</span>
                             <span className="text-[9px] sm:text-xs font-mono-tabular font-normal mt-0.5 opacity-90 truncate">
-                              {gameState.phase === 'BETTING'
-                                ? `₹${Number(slotState.amount || 0).toFixed(2)}`
-                                : 'Waiting next round'}
+                              Next Round Bet: ₹{Number(slotState.amount || 0).toFixed(2)}
                             </span>
                           </button>
                         )}

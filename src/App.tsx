@@ -165,39 +165,72 @@ export default function App() {
     }
   }, [gameState.roundId, gameState.phase]);
 
-  const handleVisitorAuth = async (e: React.FormEvent) => {
+  const handleVisitorAuth = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setAuthError(null);
 
-    const cleanUsername = usernameInput.trim();
-    if (cleanUsername.length < 3) {
-      setAuthError('Username must be at least 3 characters long.');
+    const form = e.currentTarget;
+    const formData = new FormData(form);
+    const rawUsername =
+      (formData.get('username') as string) ||
+      (form.elements.namedItem('username') as HTMLInputElement)?.value ||
+      usernameInput;
+    const rawPassword =
+      (formData.get('password') as string) ||
+      (form.elements.namedItem('password') as HTMLInputElement)?.value ||
+      passwordInput;
+    const rawConfirm =
+      (formData.get('confirmPassword') as string) ||
+      (form.elements.namedItem('confirmPassword') as HTMLInputElement)?.value ||
+      confirmPasswordInput;
+    const rawReferral =
+      (formData.get('referralCode') as string) ||
+      (form.elements.namedItem('referralCode') as HTMLInputElement)?.value ||
+      referralCodeInput;
+
+    const cleanUsername = String(rawUsername || '').trim();
+    const finalPassword = String(rawPassword || '');
+    const finalConfirm = String(rawConfirm || '');
+    const cleanRefCode = String(rawReferral || '').trim().toUpperCase();
+
+    if (!cleanUsername || cleanUsername.length < 3 || cleanUsername.length > 24) {
+      setAuthError('Username must be between 3 and 24 characters.');
       return;
     }
-    if (passwordInput.length < 6) {
+    if (!/^[a-zA-Z0-9_]+$/.test(cleanUsername)) {
+      setAuthError('Username may only contain letters, numbers, and underscores.');
+      return;
+    }
+    if (!finalPassword || finalPassword.length < 6) {
       setAuthError('Password must be at least 6 characters long.');
       return;
     }
-    if (authMode === 'signup' && passwordInput !== confirmPasswordInput) {
+    if (authMode === 'signup' && finalPassword !== finalConfirm) {
       setAuthError('Password and Confirm Password do not match.');
       return;
+    }
+
+    setUsernameInput(cleanUsername);
+    setPasswordInput(finalPassword);
+    if (authMode === 'signup') {
+      setConfirmPasswordInput(finalConfirm);
+      setReferralCodeInput(cleanRefCode);
     }
 
     setAuthSubmitting(true);
     try {
       const endpoint = authMode === 'signup' ? '/api/auth/signup' : '/api/auth/login';
-      const cleanRefCode = referralCodeInput.trim().toUpperCase();
       const payload =
         authMode === 'signup'
           ? {
               username: cleanUsername,
-              password: passwordInput,
-              confirmPassword: confirmPasswordInput,
+              password: finalPassword,
+              confirmPassword: finalConfirm,
               referralCode: cleanRefCode || undefined,
             }
           : {
               username: cleanUsername,
-              password: passwordInput,
+              password: finalPassword,
             };
 
       const res = await apiFetch(endpoint, {
@@ -756,10 +789,12 @@ export default function App() {
                 {/* Auth Form */}
                 <form onSubmit={handleVisitorAuth} className="space-y-4">
                   <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                    <label htmlFor="visitor-username" className="block text-xs font-medium text-slate-300 mb-1.5">
                       Username
                     </label>
                     <input
+                      id="visitor-username"
+                      name="username"
                       type="text"
                       required
                       minLength={3}
@@ -773,10 +808,12 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                    <label htmlFor="visitor-password" className="block text-xs font-medium text-slate-300 mb-1.5">
                       Password
                     </label>
                     <input
+                      id="visitor-password"
+                      name="password"
                       type="password"
                       required
                       minLength={6}
@@ -791,10 +828,12 @@ export default function App() {
                   {authMode === 'signup' && (
                     <>
                       <div>
-                        <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                        <label htmlFor="visitor-confirm-password" className="block text-xs font-medium text-slate-300 mb-1.5">
                           Confirm Password
                         </label>
                         <input
+                          id="visitor-confirm-password"
+                          name="confirmPassword"
                           type="password"
                           required
                           minLength={6}
@@ -807,7 +846,7 @@ export default function App() {
                       </div>
 
                       <div>
-                        <label className="flex items-center justify-between text-xs font-medium text-slate-300 mb-1.5">
+                        <label htmlFor="visitor-referral-code" className="flex items-center justify-between text-xs font-medium text-slate-300 mb-1.5">
                           <span>Referral Code (Optional)</span>
                           {referralCodeInput && (
                             <span className="text-[10px] text-emerald-400 font-semibold font-mono-tabular">
@@ -816,6 +855,8 @@ export default function App() {
                           )}
                         </label>
                         <input
+                          id="visitor-referral-code"
+                          name="referralCode"
                           type="text"
                           maxLength={16}
                           value={referralCodeInput}

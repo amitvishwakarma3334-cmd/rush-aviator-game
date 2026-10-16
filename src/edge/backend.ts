@@ -803,13 +803,42 @@ export async function handleEdgeApiRequest(
 
   // 3. POST /api/auth/signup
   if (pathname === '/api/auth/signup' && req.method === 'POST') {
-    const body = (await req.json().catch(() => ({}))) as {
-      username?: string;
-      password?: string;
-      confirmPassword?: string;
-      referralCode?: string;
-    };
-    const cleanUsername = (body.username || '').trim();
+    const rawBody = ((await req.json().catch(() => ({}))) || {}) as Record<string, unknown>;
+    const candidateUser =
+      typeof rawBody.username === 'string'
+        ? rawBody.username
+        : typeof rawBody.username === 'number'
+        ? String(rawBody.username)
+        : typeof rawBody.userName === 'string'
+        ? rawBody.userName
+        : typeof rawBody.user_name === 'string'
+        ? rawBody.user_name
+        : typeof rawBody.name === 'string'
+        ? rawBody.name
+        : '';
+    const cleanUsername = candidateUser.trim();
+
+    const candidatePass =
+      typeof rawBody.password === 'string'
+        ? rawBody.password
+        : typeof rawBody.pass === 'string'
+        ? rawBody.pass
+        : '';
+    const candidateConfirm =
+      typeof rawBody.confirmPassword === 'string'
+        ? rawBody.confirmPassword
+        : typeof rawBody.confirm_password === 'string'
+        ? rawBody.confirm_password
+        : candidatePass;
+    const candidateRef =
+      typeof rawBody.referralCode === 'string'
+        ? rawBody.referralCode
+        : typeof rawBody.referral_code === 'string'
+        ? rawBody.referral_code
+        : typeof rawBody.ref === 'string'
+        ? rawBody.ref
+        : '';
+
     if (!cleanUsername || cleanUsername.length < 3 || cleanUsername.length > 24) {
       return jsonResponse({ error: 'Username must be between 3 and 24 characters.' }, 400);
     }
@@ -819,10 +848,10 @@ export async function handleEdgeApiRequest(
         400
       );
     }
-    if (!body.password || body.password.length < 6) {
+    if (!candidatePass || candidatePass.length < 6) {
       return jsonResponse({ error: 'Password must be at least 6 characters long.' }, 400);
     }
-    if (body.password !== body.confirmPassword) {
+    if (candidatePass !== candidateConfirm) {
       return jsonResponse({ error: 'Password and Confirm Password do not match.' }, 400);
     }
 
@@ -836,7 +865,7 @@ export async function handleEdgeApiRequest(
 
     // Validate referral code if provided
     let referrer: UserRecord | undefined;
-    const rawReferralCode = (body.referralCode || '').trim().toUpperCase();
+    const rawReferralCode = candidateRef.trim().toUpperCase();
     if (rawReferralCode) {
       referrer = dbState.users.find(
         (u) => (u.referralCode && u.referralCode.toUpperCase() === rawReferralCode) ||
@@ -858,7 +887,7 @@ export async function handleEdgeApiRequest(
       id: `usr_${Date.now()}_${randomHex(3)}`,
       username: cleanUsername,
       usernameLower: lower,
-      passwordHash: await hashPasswordEdge(body.password),
+      passwordHash: await hashPasswordEdge(candidatePass),
       role: 'user',
       status: 'active',
       balance: bonusAmount,
@@ -955,17 +984,32 @@ export async function handleEdgeApiRequest(
 
   // 4. POST /api/auth/login
   if (pathname === '/api/auth/login' && req.method === 'POST') {
-    const body = (await req.json().catch(() => ({}))) as {
-      username?: string;
-      password?: string;
-    };
-    const cleanUsername = (body.username || '').trim().toLowerCase();
-    if (!cleanUsername || !body.password) {
+    const rawBody = ((await req.json().catch(() => ({}))) || {}) as Record<string, unknown>;
+    const candidateUser =
+      typeof rawBody.username === 'string'
+        ? rawBody.username
+        : typeof rawBody.username === 'number'
+        ? String(rawBody.username)
+        : typeof rawBody.userName === 'string'
+        ? rawBody.userName
+        : typeof rawBody.user_name === 'string'
+        ? rawBody.user_name
+        : '';
+    const cleanUsername = candidateUser.trim().toLowerCase();
+
+    const candidatePass =
+      typeof rawBody.password === 'string'
+        ? rawBody.password
+        : typeof rawBody.pass === 'string'
+        ? rawBody.pass
+        : '';
+
+    if (!cleanUsername || !candidatePass) {
       return jsonResponse({ error: 'Please enter both your username and password.' }, 400);
     }
 
     const user = dbState.users.find((u) => u.usernameLower === cleanUsername);
-    if (!user || !(await verifyPasswordEdge(body.password, user.passwordHash))) {
+    if (!user || !(await verifyPasswordEdge(candidatePass, user.passwordHash))) {
       return jsonResponse({ error: 'Invalid username or password.' }, 401);
     }
     if (user.status === 'suspended') {
@@ -1008,19 +1052,36 @@ export async function handleEdgeApiRequest(
 
   // 5. POST /api/admin/login
   if (pathname === '/api/admin/login' && req.method === 'POST') {
-    const body = (await req.json().catch(() => ({}))) as {
-      username?: string;
-      password?: string;
-    };
-    const cleanUsername = (body.username || '').trim().toLowerCase();
-    if (!cleanUsername || !body.password) {
+    const rawBody = ((await req.json().catch(() => ({}))) || {}) as Record<string, unknown>;
+    const candidateUser =
+      typeof rawBody.username === 'string'
+        ? rawBody.username
+        : typeof rawBody.username === 'number'
+        ? String(rawBody.username)
+        : typeof rawBody.userName === 'string'
+        ? rawBody.userName
+        : typeof rawBody.user_name === 'string'
+        ? rawBody.user_name
+        : typeof rawBody.user === 'string'
+        ? rawBody.user
+        : '';
+    const cleanUsername = candidateUser.trim().toLowerCase();
+
+    const candidatePass =
+      typeof rawBody.password === 'string'
+        ? rawBody.password
+        : typeof rawBody.pass === 'string'
+        ? rawBody.pass
+        : '';
+
+    if (!cleanUsername || !candidatePass) {
       return jsonResponse({ error: 'Please enter administrator username and password.' }, 400);
     }
 
     const admin = dbState.users.find(
       (u) => u.usernameLower === cleanUsername && u.role === 'admin'
     );
-    if (!admin || !(await verifyPasswordEdge(body.password, admin.passwordHash))) {
+    if (!admin || !(await verifyPasswordEdge(candidatePass, admin.passwordHash))) {
       return jsonResponse({ error: 'Invalid administrator credentials.' }, 401);
     }
 

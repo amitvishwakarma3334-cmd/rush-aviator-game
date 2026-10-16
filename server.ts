@@ -968,14 +968,42 @@ async function startServer() {
 
   app.post('/api/auth/signup', async (req: Request, res: Response) => {
     try {
-      const { username, password, confirmPassword, referralCode } = req.body as {
-        username?: string;
-        password?: string;
-        confirmPassword?: string;
-        referralCode?: string;
-      };
+      const rawBody = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+      const candidateUser =
+        typeof rawBody.username === 'string'
+          ? rawBody.username
+          : typeof rawBody.username === 'number'
+          ? String(rawBody.username)
+          : typeof rawBody.userName === 'string'
+          ? rawBody.userName
+          : typeof rawBody.user_name === 'string'
+          ? rawBody.user_name
+          : typeof rawBody.name === 'string'
+          ? rawBody.name
+          : '';
+      const cleanUsername = candidateUser.trim();
 
-      const cleanUsername = (username || '').trim();
+      const candidatePass =
+        typeof rawBody.password === 'string'
+          ? rawBody.password
+          : typeof rawBody.pass === 'string'
+          ? rawBody.pass
+          : '';
+      const candidateConfirm =
+        typeof rawBody.confirmPassword === 'string'
+          ? rawBody.confirmPassword
+          : typeof rawBody.confirm_password === 'string'
+          ? rawBody.confirm_password
+          : candidatePass;
+      const candidateRef =
+        typeof rawBody.referralCode === 'string'
+          ? rawBody.referralCode
+          : typeof rawBody.referral_code === 'string'
+          ? rawBody.referral_code
+          : typeof rawBody.ref === 'string'
+          ? rawBody.ref
+          : '';
+
       if (!cleanUsername || cleanUsername.length < 3 || cleanUsername.length > 24) {
         res.status(400).json({ error: 'Username must be between 3 and 24 characters.' });
         return;
@@ -984,11 +1012,11 @@ async function startServer() {
         res.status(400).json({ error: 'Username may only contain letters, numbers, and underscores.' });
         return;
       }
-      if (!password || password.length < 6) {
+      if (!candidatePass || candidatePass.length < 6) {
         res.status(400).json({ error: 'Password must be at least 6 characters long.' });
         return;
       }
-      if (password !== confirmPassword) {
+      if (candidatePass !== candidateConfirm) {
         res.status(400).json({ error: 'Password and Confirm Password do not match.' });
         return;
       }
@@ -1002,7 +1030,7 @@ async function startServer() {
         }
 
         let referrer: UserRecord | undefined;
-        const cleanRef = (referralCode || '').trim().toUpperCase();
+        const cleanRef = candidateRef.trim().toUpperCase();
         if (cleanRef) {
           referrer = dbState.users.find(
             (u) => (u.referralCode && u.referralCode.toUpperCase() === cleanRef) || u.usernameLower === cleanRef.toLowerCase()
@@ -1029,7 +1057,7 @@ async function startServer() {
           id: `usr_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
           username: cleanUsername,
           usernameLower: lower,
-          passwordHash: hashPassword(password),
+          passwordHash: hashPassword(candidatePass),
           role: 'user',
           status: 'active',
           balance: bonusAmount,
@@ -1136,15 +1164,33 @@ async function startServer() {
 
   app.post('/api/auth/login', async (req: Request, res: Response) => {
     try {
-      const { username, password } = req.body as { username?: string; password?: string };
-      const cleanUsername = (username || '').trim().toLowerCase();
-      if (!cleanUsername || !password) {
+      const rawBody = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+      const candidateUser =
+        typeof rawBody.username === 'string'
+          ? rawBody.username
+          : typeof rawBody.username === 'number'
+          ? String(rawBody.username)
+          : typeof rawBody.userName === 'string'
+          ? rawBody.userName
+          : typeof rawBody.user_name === 'string'
+          ? rawBody.user_name
+          : '';
+      const cleanUsername = candidateUser.trim().toLowerCase();
+
+      const candidatePass =
+        typeof rawBody.password === 'string'
+          ? rawBody.password
+          : typeof rawBody.pass === 'string'
+          ? rawBody.pass
+          : '';
+
+      if (!cleanUsername || !candidatePass) {
         res.status(400).json({ error: 'Please enter both your username and password.' });
         return;
       }
 
       const user = dbState.users.find((u) => u.usernameLower === cleanUsername);
-      if (!user || !verifyPassword(password, user.passwordHash)) {
+      if (!user || !verifyPassword(candidatePass, user.passwordHash)) {
         res.status(401).json({ error: 'Invalid username or password.' });
         return;
       }
@@ -1188,15 +1234,35 @@ async function startServer() {
 
   app.post('/api/admin/login', async (req: Request, res: Response) => {
     try {
-      const { username, password } = req.body as { username?: string; password?: string };
-      const cleanUsername = (username || '').trim().toLowerCase();
-      if (!cleanUsername || !password) {
+      const rawBody = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+      const candidateUser =
+        typeof rawBody.username === 'string'
+          ? rawBody.username
+          : typeof rawBody.username === 'number'
+          ? String(rawBody.username)
+          : typeof rawBody.userName === 'string'
+          ? rawBody.userName
+          : typeof rawBody.user_name === 'string'
+          ? rawBody.user_name
+          : typeof rawBody.user === 'string'
+          ? rawBody.user
+          : '';
+      const cleanUsername = candidateUser.trim().toLowerCase();
+
+      const candidatePass =
+        typeof rawBody.password === 'string'
+          ? rawBody.password
+          : typeof rawBody.pass === 'string'
+          ? rawBody.pass
+          : '';
+
+      if (!cleanUsername || !candidatePass) {
         res.status(400).json({ error: 'Please enter administrator username and password.' });
         return;
       }
 
       const admin = dbState.users.find((u) => u.usernameLower === cleanUsername && u.role === 'admin');
-      if (!admin || !verifyPassword(password, admin.passwordHash)) {
+      if (!admin || !verifyPassword(candidatePass, admin.passwordHash)) {
         res.status(401).json({ error: 'Invalid administrator credentials.' });
         return;
       }

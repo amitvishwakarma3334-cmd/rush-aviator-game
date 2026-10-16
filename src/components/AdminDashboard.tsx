@@ -209,15 +209,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     };
   }, [isAdmin, activeTab]);
 
-  const handleAdminLogin = async (e: React.FormEvent) => {
+  const handleAdminLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setLoginError(null);
+
+    const form = e.currentTarget;
+    const formData = new FormData(form);
+    const formUser =
+      (formData.get('username') as string) ||
+      (form.elements.namedItem('username') as HTMLInputElement)?.value ||
+      loginUsername;
+    const formPass =
+      (formData.get('password') as string) ||
+      (form.elements.namedItem('password') as HTMLInputElement)?.value ||
+      loginPassword;
+
+    const trimmedUsername = String(formUser || '').trim();
+    const cleanPassword = String(formPass || '');
+
+    if (!trimmedUsername || !cleanPassword) {
+      setLoginError('Please enter administrator username and password.');
+      return;
+    }
+
+    setLoginUsername(trimmedUsername);
+    setLoginPassword(cleanPassword);
     setLoginLoading(true);
     try {
       const res = await apiFetch('/api/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: loginUsername, password: loginPassword }),
+        body: JSON.stringify({ username: trimmedUsername, password: cleanPassword }),
       });
 
       let data: any = null;
@@ -602,10 +624,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         <form onSubmit={handleAdminLogin} className="space-y-4 mt-6">
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1.5">
+            <label htmlFor="admin-username" className="block text-xs font-medium text-slate-300 mb-1.5">
               Username
             </label>
             <input
+              id="admin-username"
+              name="username"
               type="text"
               required
               autoComplete="username"
@@ -617,10 +641,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1.5">
+            <label htmlFor="admin-password" className="block text-xs font-medium text-slate-300 mb-1.5">
               Password
             </label>
             <input
+              id="admin-password"
+              name="password"
               type="password"
               required
               autoComplete="current-password"

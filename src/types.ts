@@ -44,6 +44,20 @@ export interface CrashRoundHistoryItem {
   completedAt: string;
 }
 
+export interface QueuedRoundBet {
+  queueId: string;
+  userId: string;
+  username: string;
+  slotId: string;
+  amount: number;
+  autoCashout: number | null;
+  targetRoundId: string;
+  status: 'QUEUED' | 'CANCELLED' | 'COMMITTED' | 'REJECTED' | 'SETTLED';
+  createdAt: string;
+  committedBetId?: string;
+  idempotencyKey?: string;
+}
+
 export interface GameStateResponse {
   roundId: string;
   phase: 'BETTING' | 'FLYING' | 'CRASHED';
@@ -55,6 +69,8 @@ export interface GameStateResponse {
   activeBets: ActiveBetPublic[];
   myBet: MyActiveBet | null;
   myBets: MyActiveBet[];
+  myQueuedBets?: QueuedRoundBet[];
+  queuedBetsCount?: number;
   recentHistory: CrashRoundHistoryItem[];
   userBalance: number | null;
   phaseStartTime?: number;
@@ -76,6 +92,8 @@ export interface TransactionRecord {
     | 'WELCOME_BONUS'
     | 'GAME_BET'
     | 'GAME_WIN'
+    | 'QUEUED_BET'
+    | 'QUEUED_BET_REFUND'
     | 'DEPOSIT_APPROVED'
     | 'DEPOSIT_BONUS'
     | 'WITHDRAWAL_RESERVE'

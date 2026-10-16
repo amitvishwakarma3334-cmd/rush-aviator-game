@@ -221,6 +221,7 @@ async function hashPasswordEdge(password: string): Promise<string> {
 }
 
 async function verifyPasswordEdge(password: string, storedHash: string): Promise<boolean> {
+  if (!storedHash) return false;
   if (storedHash.startsWith('pbkdf2:')) {
     const parts = storedHash.split(':');
     if (parts.length !== 3) return false;
@@ -245,6 +246,24 @@ async function verifyPasswordEdge(password: string, storedHash: string): Promise
     const actualHex = Array.from(new Uint8Array(bits), (b) => b.toString(16).padStart(2, '0')).join('');
     return actualHex === expectedHex;
   }
+
+  // Scrypt fallback for hashes stored as salt:derivedHex
+  const parts = storedHash.split(':');
+  if (parts.length === 2) {
+    try {
+      const nodeCrypto = await import('node:crypto');
+      if (nodeCrypto && typeof nodeCrypto.scryptSync === 'function') {
+        const [salt, keyHex] = parts;
+        const keyBuffer = Buffer.from(keyHex, 'hex');
+        const derivedBuffer = nodeCrypto.scryptSync(password, salt, 64);
+        if (keyBuffer.length !== derivedBuffer.length) return false;
+        return nodeCrypto.timingSafeEqual(keyBuffer, derivedBuffer);
+      }
+    } catch {
+      // In pure web crypto environments without nodejs_compat, scrypt is unavailable
+    }
+  }
+
   return false;
 }
 
@@ -609,20 +628,31 @@ async function getSessionFromReq(
   }
 }
 
+let currentRequestOrigin: string | null = null;
+
 function jsonResponse(
   body: unknown,
   status = 200,
   extraHeaders: Record<string, string> = {}
 ): Response {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    ...extraHeaders,
+  };
+
+  if (currentRequestOrigin) {
+    headers['Access-Control-Allow-Origin'] = currentRequestOrigin;
+    headers['Access-Control-Allow-Credentials'] = 'true';
+    headers['Vary'] = 'Origin';
+  } else {
+    headers['Access-Control-Allow-Origin'] = '*';
+  }
+
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-      ...extraHeaders,
-    },
+    headers,
   });
 }
 
@@ -637,13 +667,15 @@ export async function handleEdgeApiRequest(
   env: EdgeEnv,
   storage: StorageAdapter
 ): Promise<Response> {
+  currentRequestOrigin = req.headers.get('origin');
   if (req.method === 'OPTIONS') {
     return jsonResponse({ ok: true }, 200);
   }
 
-  const url = new URL(req.url);
-  const pathname = url.pathname;
-  const secret = env.SESSION_SECRET || 'aviator_demo_default_session_secret_2026';
+  try {
+    const url = new URL(req.url);
+    const pathname = url.pathname;
+    const secret = env.SESSION_SECRET || 'aviator_demo_default_session_secret_2026';
 
   let dbState = await storage.load();
   if (!dbState) {
@@ -2026,5 +2058,15 @@ export async function handleEdgeApiRequest(
     }
   }
 
-  return jsonResponse({ error: `API endpoint not found: ${req.method} ${pathname}` }, 404);
+    return jsonResponse({ error: `API endpoint not found: ${req.method} ${pathname}` }, 404);
+  } catch (err: any) {
+    console.error('Unhandled Edge API exception:', err);
+    return jsonResponse(
+      {
+        error:
+          'Edge backend server error: ' + (err instanceof Error ? err.message : 'Internal Server Error'),
+      },
+      500
+    );
+  }
 }

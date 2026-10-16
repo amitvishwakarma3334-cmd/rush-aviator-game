@@ -158,6 +158,20 @@ function hashPassword(password: string): string {
 }
 
 function verifyPassword(password: string, storedHash: string): boolean {
+  if (!storedHash) return false;
+  // Support PBKDF2 hashes (from edge backend): pbkdf2:salt:hex
+  if (storedHash.startsWith('pbkdf2:')) {
+    const parts = storedHash.split(':');
+    if (parts.length !== 3) return false;
+    const [, salt, expectedHex] = parts;
+    const derivedKey = crypto.pbkdf2Sync(password, salt, 60000, 32, 'sha256').toString('hex');
+    const expectedBuf = Buffer.from(expectedHex, 'hex');
+    const actualBuf = Buffer.from(derivedKey, 'hex');
+    if (expectedBuf.length !== actualBuf.length) return false;
+    return crypto.timingSafeEqual(expectedBuf, actualBuf);
+  }
+
+  // Support scrypt hashes (from server.ts): salt:keyHex
   const parts = storedHash.split(':');
   if (parts.length !== 2) return false;
   const [salt, keyHex] = parts;
@@ -497,8 +511,10 @@ async function persistChange(options?: {
   session?: SessionRecord;
   deleteSessionToken?: string;
 }): Promise<void> {
+  // Always write local disk backup so data is never lost if Mongo is slow/offline
+  saveLocalDiskDb();
+
   if (!useMongo) {
-    saveLocalDiskDb();
     return;
   }
   const tasks: Promise<unknown>[] = [];
@@ -530,7 +546,11 @@ async function persistChange(options?: {
   if (options?.deleteSessionToken) {
     tasks.push(SessionModel.deleteOne({ token: options.deleteSessionToken }).exec());
   }
-  await Promise.all(tasks);
+  try {
+    await Promise.all(tasks);
+  } catch (mongoErr) {
+    console.warn('MongoDB persistence encountered error (local disk state safely saved):', mongoErr);
+  }
 }
 
 // ============================================================================
@@ -871,9 +891,14 @@ async function startServer() {
 
   const app = express();
   app.use((req: Request, res: Response, next: NextFunction) => {
-    const origin = req.headers.origin || '*';
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Vary', 'Origin');
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') {
@@ -2527,6 +2552,12 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  // Global JSON error handler for all /api routes to prevent returning HTML error pages
+  app.use('/api', (err: any, _req: Request, res: Response, _next: NextFunction) => {
+    console.error('Unhandled API Express error:', err);
+    res.status(500).json({ error: 'Server error: ' + (err?.message || 'Internal Server Error') });
+  });
 
   const PORT = Number(process.env.PORT) || 3000;
   app.listen(PORT, '0.0.0.0', () => {

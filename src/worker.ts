@@ -27,30 +27,56 @@ export class AviatorStore {
   }
 
   async fetch(request: Request): Promise<Response> {
-    return this.state.blockConcurrencyWhile(async () => {
-      const storageAdapter: StorageAdapter = {
-        storageLabel: 'Cloudflare Durable Object Persistent Storage',
-        load: async () => {
-          if (this.cachedDb) return this.cachedDb;
-          const stored = await this.state.storage.get<EdgeDatabaseState>('aviator_db_v1');
-          if (stored) {
-            this.cachedDb = stored;
-            return stored;
-          }
-          return null;
-        },
-        save: async (nextState: EdgeDatabaseState) => {
-          this.cachedDb = nextState;
-          await this.state.storage.put('aviator_db_v1', nextState);
-        },
-      };
+    try {
+      return await this.state.blockConcurrencyWhile(async () => {
+        const storageAdapter: StorageAdapter = {
+          storageLabel: 'Cloudflare Durable Object Persistent Storage',
+          load: async () => {
+            if (this.cachedDb) return this.cachedDb;
+            try {
+              const stored = await this.state.storage.get<EdgeDatabaseState>('aviator_db_v1');
+              if (stored) {
+                this.cachedDb = stored;
+                return stored;
+              }
+            } catch (storageErr) {
+              console.warn('Durable Object storage.get error:', storageErr);
+            }
+            return null;
+          },
+          save: async (nextState: EdgeDatabaseState) => {
+            this.cachedDb = nextState;
+            try {
+              await this.state.storage.put('aviator_db_v1', nextState);
+            } catch (storageErr) {
+              console.warn('Durable Object storage.put error:', storageErr);
+            }
+          },
+        };
 
-      return handleEdgeApiRequest(request, this.env, storageAdapter);
-    });
+        return await handleEdgeApiRequest(request, this.env, storageAdapter);
+      });
+    } catch (err: any) {
+      console.error('AviatorStore Durable Object error:', err);
+      return new Response(
+        JSON.stringify({
+          error:
+            'Durable Object storage error: ' +
+            (err instanceof Error ? err.message : String(err)),
+        }),
+        {
+          status: 500,
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Access-Control-Allow-Origin': request.headers.get('origin') || '*',
+          },
+        }
+      );
+    }
   }
 }
 
-// Fallback memory/KV store if Durable Object binding is not attached
+// Fallback memory/KV store if Durable Object binding is not attached or fails
 let memoryFallbackDb: EdgeDatabaseState | null = null;
 
 export default {
@@ -58,37 +84,70 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname.startsWith('/api/')) {
-      // 1. Prefer Durable Object persistent storage when bound (wrangler.jsonc default)
-      if (env.AVIATOR_STORE) {
-        const id = env.AVIATOR_STORE.idFromName('global-aviator-store');
-        const stub = env.AVIATOR_STORE.get(id);
-        return stub.fetch(request);
-      }
+      try {
+        // 1. Prefer Durable Object persistent storage when bound (wrangler.jsonc default)
+        if (env.AVIATOR_STORE) {
+          try {
+            const id = env.AVIATOR_STORE.idFromName('global-aviator-store');
+            const stub = env.AVIATOR_STORE.get(id);
+            return await stub.fetch(request);
+          } catch (doErr) {
+            console.warn(
+              'Durable Object invocation failed, falling back to KV/memory storage adapter:',
+              doErr
+            );
+          }
+        }
 
-      // 2. Fallback to Cloudflare KV when bound, or edge isolate state + signed tokens
-      const storageAdapter: StorageAdapter = {
-        storageLabel: env.AVIATOR_KV
-          ? 'Cloudflare KV Persistent Storage'
-          : 'Cloudflare Edge Runtime Storage',
-        load: async () => {
-          if (env.AVIATOR_KV) {
-            const raw = await env.AVIATOR_KV.get('aviator_db_v1');
-            if (raw) {
-              memoryFallbackDb = JSON.parse(raw) as EdgeDatabaseState;
-              return memoryFallbackDb;
+        // 2. Fallback to Cloudflare KV when bound, or edge isolate state + signed tokens
+        const storageAdapter: StorageAdapter = {
+          storageLabel: env.AVIATOR_KV
+            ? 'Cloudflare KV Persistent Storage'
+            : 'Cloudflare Edge Runtime Storage',
+          load: async () => {
+            if (env.AVIATOR_KV) {
+              try {
+                const raw = await env.AVIATOR_KV.get('aviator_db_v1');
+                if (raw) {
+                  memoryFallbackDb = JSON.parse(raw) as EdgeDatabaseState;
+                  return memoryFallbackDb;
+                }
+              } catch (kvErr) {
+                console.warn('KV get failed:', kvErr);
+              }
             }
-          }
-          return memoryFallbackDb;
-        },
-        save: async (nextState: EdgeDatabaseState) => {
-          memoryFallbackDb = nextState;
-          if (env.AVIATOR_KV) {
-            await env.AVIATOR_KV.put('aviator_db_v1', JSON.stringify(nextState));
-          }
-        },
-      };
+            return memoryFallbackDb;
+          },
+          save: async (nextState: EdgeDatabaseState) => {
+            memoryFallbackDb = nextState;
+            if (env.AVIATOR_KV) {
+              try {
+                await env.AVIATOR_KV.put('aviator_db_v1', JSON.stringify(nextState));
+              } catch (kvErr) {
+                console.warn('KV put failed:', kvErr);
+              }
+            }
+          },
+        };
 
-      return handleEdgeApiRequest(request, env, storageAdapter);
+        return await handleEdgeApiRequest(request, env, storageAdapter);
+      } catch (err: any) {
+        console.error('Unhandled Worker API error:', err);
+        return new Response(
+          JSON.stringify({
+            error:
+              'Worker API error: ' +
+              (err instanceof Error ? err.message : 'Unknown server error'),
+          }),
+          {
+            status: 500,
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              'Access-Control-Allow-Origin': request.headers.get('origin') || '*',
+            },
+          }
+        );
+      }
     }
 
     // Serve Vite static assets for all non-API routes

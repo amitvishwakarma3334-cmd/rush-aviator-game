@@ -205,10 +205,46 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setAuthError(data.error || 'Authentication failed.');
+
+      // Safely parse JSON or text response body without crashing on HTML error pages
+      let data: any = null;
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        try {
+          data = await res.json();
+        } catch {
+          data = null;
+        }
       } else {
+        const text = await res.text().catch(() => '');
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = { error: text || null };
+        }
+      }
+
+      if (!res.ok) {
+        if (data && data.error && typeof data.error === 'string') {
+          setAuthError(data.error);
+        } else if (res.status === 401) {
+          setAuthError('Invalid username or password. Please verify your credentials.');
+        } else if (res.status === 403) {
+          setAuthError('Your account has been suspended or access is forbidden. Contact administrator.');
+        } else if (res.status === 404) {
+          setAuthError('Authentication service endpoint not found (HTTP 404). Please ensure backend is deployed.');
+        } else if (res.status === 409) {
+          setAuthError('That username is already taken. Please choose another username.');
+        } else if (res.status >= 500) {
+          setAuthError(`Authentication server error (HTTP ${res.status}). The server or database encountered an issue. Please try again.`);
+        } else {
+          setAuthError(`Authentication failed (HTTP ${res.status}).`);
+        }
+      } else {
+        if (!data || !data.user) {
+          setAuthError('Authentication server returned an invalid response structure.');
+          return;
+        }
         if (data.token) {
           setAuthToken(data.token);
         }
@@ -218,8 +254,15 @@ export default function App() {
         setConfirmPasswordInput('');
         setActiveView(data.user?.role === 'admin' ? 'admin' : 'game');
       }
-    } catch {
-      setAuthError('Network error while communicating with authentication server.');
+    } catch (err: any) {
+      console.error('Authentication communication error:', err);
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setAuthError('You appear to be offline. Please check your internet connection.');
+      } else if (err?.name === 'AbortError') {
+        setAuthError('Authentication request timed out. Please try again.');
+      } else {
+        setAuthError('Unable to reach the authentication server over HTTPS. Please verify backend availability.');
+      }
     } finally {
       setAuthSubmitting(false);
     }

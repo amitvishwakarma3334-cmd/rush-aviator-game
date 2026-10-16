@@ -2,6 +2,7 @@
   "name": "rush-aviator-game",
   "main": "src/worker.ts",
   "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",

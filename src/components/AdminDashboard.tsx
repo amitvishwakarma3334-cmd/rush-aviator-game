@@ -219,17 +219,47 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: loginUsername, password: loginPassword }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setLoginError(data.error || 'Administrator login failed.');
+
+      let data: any = null;
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        try {
+          data = await res.json();
+        } catch {
+          data = null;
+        }
       } else {
-        if (data.token) {
+        const text = await res.text().catch(() => '');
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = { error: text || null };
+        }
+      }
+
+      if (!res.ok) {
+        if (data && data.error && typeof data.error === 'string') {
+          setLoginError(data.error);
+        } else if (res.status === 401) {
+          setLoginError('Invalid administrator credentials.');
+        } else if (res.status >= 500) {
+          setLoginError(`Administrator authentication server error (HTTP ${res.status}).`);
+        } else {
+          setLoginError(`Administrator sign-in failed (HTTP ${res.status}).`);
+        }
+      } else {
+        if (data && data.token) {
           setAuthToken(data.token);
         }
-        onAdminAuthenticated(data.user);
+        onAdminAuthenticated(data?.user);
       }
-    } catch {
-      setLoginError('Network error while signing in to Administrator Panel.');
+    } catch (err: any) {
+      console.error('Admin login error:', err);
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setLoginError('You are currently offline. Please check your internet connection.');
+      } else {
+        setLoginError('Unable to reach the administrator authentication server over HTTPS.');
+      }
     } finally {
       setLoginLoading(false);
     }

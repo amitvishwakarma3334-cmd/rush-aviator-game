@@ -12,15 +12,90 @@ interface AviatorCanvasProps {
   gameState: GameStateResponse;
 }
 
+interface FlightAnimationState {
+  roundId: string;
+  phase: 'BETTING' | 'FLYING' | 'CRASHED';
+  baseMultiplier: number;
+  lastPacketTime: number;
+  renderedMultiplier: number;
+  confirmedCrashPoint: number | null;
+  crashTime: number | null;
+  countdownMs: number;
+}
+
 export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const gameStateRef = useRef<GameStateResponse>(gameState);
-  gameStateRef.current = gameState;
 
   const [audioSettings, setAudioSettings] = useState<AudioSettings>(() => soundFx.getSettings());
   const [selectedHistoryRound, setSelectedHistoryRound] = useState<CrashRoundHistoryItem | null>(null);
   const [displayMultiplier, setDisplayMultiplier] = useState<number>(gameState.multiplier);
   const [displayCountdown, setDisplayCountdown] = useState<number>(gameState.countdownMs);
+
+  // Authoritative animation state ref - single source of truth for canvas frames
+  const animStateRef = useRef<FlightAnimationState>({
+    roundId: gameState.roundId,
+    phase: gameState.phase,
+    baseMultiplier: gameState.multiplier,
+    lastPacketTime: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+    renderedMultiplier: gameState.phase === 'CRASHED' ? (gameState.crashPoint || gameState.multiplier) : Math.max(1.0, gameState.multiplier),
+    confirmedCrashPoint: gameState.crashPoint,
+    crashTime: gameState.phase === 'CRASHED' ? (typeof performance !== 'undefined' ? performance.now() : Date.now()) : null,
+    countdownMs: gameState.countdownMs,
+  });
+
+  // Synchronize incoming authoritative server game state packets
+  useEffect(() => {
+    const anim = animStateRef.current;
+    const now = performance.now();
+    const isNewRound = anim.roundId !== gameState.roundId;
+
+    if (isNewRound) {
+      anim.roundId = gameState.roundId;
+      anim.phase = gameState.phase;
+      anim.baseMultiplier = gameState.multiplier;
+      anim.lastPacketTime = now;
+      anim.confirmedCrashPoint = gameState.crashPoint;
+      anim.crashTime = gameState.phase === 'CRASHED' ? now : null;
+      anim.countdownMs = gameState.countdownMs;
+      if (gameState.phase === 'BETTING') {
+        anim.renderedMultiplier = 1.00;
+        setDisplayMultiplier(1.00);
+        setDisplayCountdown(gameState.countdownMs);
+      } else if (gameState.phase === 'CRASHED') {
+        const finalVal = gameState.crashPoint || gameState.multiplier;
+        anim.renderedMultiplier = finalVal;
+        setDisplayMultiplier(finalVal);
+      } else {
+        anim.renderedMultiplier = Math.max(1.00, gameState.multiplier);
+        setDisplayMultiplier(anim.renderedMultiplier);
+      }
+    } else {
+      // Same round update
+      if (anim.phase !== 'CRASHED' && gameState.phase === 'CRASHED') {
+        anim.phase = 'CRASHED';
+        anim.crashTime = now;
+        anim.confirmedCrashPoint = gameState.crashPoint;
+        // Lock multiplier strictly at authoritative crash point (never overshoot or jump backward)
+        const finalVal = gameState.crashPoint || gameState.multiplier;
+        anim.renderedMultiplier = finalVal;
+        setDisplayMultiplier(finalVal);
+      } else {
+        anim.phase = gameState.phase;
+        anim.baseMultiplier = gameState.multiplier;
+        anim.lastPacketTime = now;
+        anim.countdownMs = gameState.countdownMs;
+        if (gameState.crashPoint !== null) {
+          anim.confirmedCrashPoint = gameState.crashPoint;
+        }
+      }
+    }
+  }, [
+    gameState.roundId,
+    gameState.phase,
+    gameState.multiplier,
+    gameState.crashPoint,
+    gameState.countdownMs,
+  ]);
 
   // Synchronize flight audio strictly with server-authoritative game state
   useEffect(() => {
@@ -51,12 +126,15 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
     let lastUiUpdate = 0;
 
     const renderFrame = (now: number) => {
-      const gs = gameStateRef.current;
+      const anim = animStateRef.current;
       const rect = canvas.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
-      if (canvas.width !== Math.floor(rect.width * dpr) || canvas.height !== Math.floor(rect.height * dpr)) {
-        canvas.width = Math.floor(rect.width * dpr);
-        canvas.height = Math.floor(rect.height * dpr);
+      const targetPixelW = Math.max(1, Math.floor(rect.width * dpr));
+      const targetPixelH = Math.max(1, Math.floor(rect.height * dpr));
+
+      if (canvas.width !== targetPixelW || canvas.height !== targetPixelH) {
+        canvas.width = targetPixelW;
+        canvas.height = targetPixelH;
       }
 
       ctx.save();
@@ -65,33 +143,43 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
       const width = rect.width;
       const height = rect.height;
 
-      // Calculate smooth authoritative multiplier / countdown
-      let currentMult = gs.multiplier;
-      if (gs.phase === 'FLYING') {
-        const clientNow = Date.now();
-        const baseStartTime = gs.phaseStartTime || clientNow;
-        const elapsedSec = Math.max(0, (clientNow - baseStartTime) / 1000);
-        const continuous = Math.max(1.0, Math.exp(0.068 * elapsedSec));
-        // Use smooth continuous multiplier bounded by authoritative crash point if known
-        currentMult = gs.crashPoint ? Math.min(gs.crashPoint, continuous) : Math.max(gs.multiplier, continuous);
-      } else if (gs.phase === 'CRASHED') {
-        currentMult = gs.crashPoint || gs.multiplier;
+      // 1. Authoritative Multiplier & Countdown Progression
+      let currentMult = anim.renderedMultiplier;
+      let currentCountdown = anim.countdownMs;
+
+      if (anim.phase === 'BETTING') {
+        const elapsedSincePacket = Math.max(0, now - anim.lastPacketTime);
+        currentCountdown = Math.max(0, anim.countdownMs - elapsedSincePacket);
+        currentMult = 1.00;
+        anim.renderedMultiplier = 1.00;
+      } else if (anim.phase === 'FLYING') {
+        const elapsedSec = Math.max(0, (now - anim.lastPacketTime) / 1000);
+        // Exponential climb rate matching server engine:
+        const extrapolated = anim.baseMultiplier * Math.exp(0.068 * elapsedSec);
+        // Guard against any forward drift ahead of server state:
+        // Client can only lead the server's last confirmed state by at most 0.05x (~90ms of flight):
+        const maxLead = anim.baseMultiplier + 0.05;
+        const bounded = Math.min(extrapolated, maxLead);
+        // Monotonic progression (never jumps backward during flight):
+        anim.renderedMultiplier = Math.max(anim.renderedMultiplier, bounded);
+        currentMult = anim.renderedMultiplier;
+      } else if (anim.phase === 'CRASHED') {
+        // Authoritative final crash point fixed permanently for remainder of round
+        const finalCrash = anim.confirmedCrashPoint ?? anim.baseMultiplier;
+        anim.renderedMultiplier = finalCrash;
+        currentMult = finalCrash;
       }
 
-      // Update UI readout at ~30-60fps smoothly
-      if (now - lastUiUpdate > 32) {
+      // Update UI state at ~30-60fps smoothly
+      if (now - lastUiUpdate > 30) {
         lastUiUpdate = now;
         setDisplayMultiplier(currentMult);
-        if (gs.phase === 'BETTING') {
-          const clientNow = Date.now();
-          const baseStart = gs.phaseStartTime || clientNow;
-          const elapsed = clientNow - baseStart;
-          const remaining = Math.max(0, 5000 - elapsed);
-          setDisplayCountdown(remaining);
+        if (anim.phase === 'BETTING') {
+          setDisplayCountdown(currentCountdown);
         }
       }
 
-      // 1. Deep Cockpit Radar Background
+      // 2. Cockpit Radar Ambient Background
       const bgGrad = ctx.createRadialGradient(
         width * 0.5,
         height * 0.65,
@@ -100,43 +188,43 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
         height * 0.5,
         Math.max(width, height) * 0.85
       );
-      if (gs.phase === 'CRASHED') {
-        bgGrad.addColorStop(0, '#1F1218');
+      if (anim.phase === 'CRASHED') {
+        bgGrad.addColorStop(0, '#1E1117');
         bgGrad.addColorStop(1, '#090C12');
-      } else if (gs.phase === 'FLYING') {
-        bgGrad.addColorStop(0, '#231119');
+      } else if (anim.phase === 'FLYING') {
+        bgGrad.addColorStop(0, '#221118');
         bgGrad.addColorStop(1, '#0A0D14');
       } else {
-        bgGrad.addColorStop(0, '#131824');
+        bgGrad.addColorStop(0, '#121723');
         bgGrad.addColorStop(1, '#0A0D14');
       }
       ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, width, height);
 
-      // 2. Subtle Radar Grid & Sunburst Rays from Bottom-Left Origin
-      const padLeft = 40;
-      const padBottom = 32;
-      const padTop = 28;
-      const padRight = 36;
+      // 3. Radar Geometry & Grid System
+      const padLeft = Math.max(32, width * 0.065);
+      const padBottom = Math.max(28, height * 0.10);
+      const padTop = Math.max(26, height * 0.08);
+      const padRight = Math.max(34, width * 0.08);
       const plotW = Math.max(80, width - padLeft - padRight);
       const plotH = Math.max(80, height - padTop - padBottom);
       const originX = padLeft;
       const originY = height - padBottom;
 
-      // Rotating subtle rays from origin
+      // Rotating Subtle Sunburst Rays from Origin
       ctx.save();
       ctx.beginPath();
       ctx.rect(padLeft, padTop, plotW, plotH);
       ctx.clip();
 
       const rayCount = 14;
-      const rotationOffset = gs.phase === 'FLYING' ? (now * 0.00018) : 0;
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.025)';
+      const rotationOffset = anim.phase === 'FLYING' ? (now * 0.00015) : 0;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.022)';
       ctx.lineWidth = 1;
       for (let i = 0; i < rayCount; i++) {
         const angle = (i / rayCount) * (Math.PI * 0.65) + rotationOffset;
-        const rx = originX + Math.cos(angle) * Math.max(width, height) * 1.3;
-        const ry = originY - Math.sin(angle) * Math.max(width, height) * 1.3;
+        const rx = originX + Math.cos(angle) * Math.max(width, height) * 1.35;
+        const ry = originY - Math.sin(angle) * Math.max(width, height) * 1.35;
         ctx.beginPath();
         ctx.moveTo(originX, originY);
         ctx.lineTo(rx, ry);
@@ -144,7 +232,7 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
       }
 
       // Horizontal and Vertical Grid Lines
-      ctx.strokeStyle = 'rgba(148, 163, 184, 0.07)';
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.065)';
       ctx.lineWidth = 1;
       const hSteps = 5;
       for (let i = 1; i <= hSteps; i++) {
@@ -164,7 +252,7 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
       }
       ctx.restore();
 
-      // Axis Border Lines
+      // Axis Lines
       ctx.strokeStyle = 'rgba(148, 163, 184, 0.22)';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -173,94 +261,135 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
       ctx.lineTo(originX + plotW, originY);
       ctx.stroke();
 
-      // Axis Ticks (Dots along X and Y axes)
-      const tickOffset = gs.phase === 'FLYING' ? ((now * 0.04) % 24) : 0;
+      // Axis Ticks
+      const tickOffset = anim.phase === 'FLYING' ? ((now * 0.035) % 24) : 0;
       ctx.fillStyle = 'rgba(148, 163, 184, 0.35)';
       for (let x = originX + 24 - tickOffset; x < originX + plotW; x += 24) {
         if (x > originX) {
           ctx.beginPath();
-          ctx.arc(x, originY + 12, 1.5, 0, Math.PI * 2);
+          ctx.arc(x, originY + 10, 1.5, 0, Math.PI * 2);
           ctx.fill();
         }
       }
       for (let y = originY - 24 + tickOffset; y > padTop; y -= 24) {
         if (y < originY) {
           ctx.beginPath();
-          ctx.arc(originX - 14, y, 1.5, 0, Math.PI * 2);
+          ctx.arc(originX - 12, y, 1.5, 0, Math.PI * 2);
           ctx.fill();
         }
       }
 
-      // 3. Flight Curve & Animated Airplane
-      if (gs.phase === 'FLYING' || gs.phase === 'CRASHED') {
-        const mult = Math.max(1.0, currentMult);
-        // Normalize progress smoothly between 0.08 and 0.92 of plot area
-        const logProgress = Math.min(1, Math.log10(mult) / Math.log10(25));
-        const linearBoost = Math.min(0.88, (mult - 1) / 3.5);
-        const progress = Math.max(0.06, Math.min(0.92, linearBoost * 0.55 + logProgress * 0.45));
+      // 4. Smooth, Natural Logarithmic Flight Pacing (Requirement 2)
+      // Spreads multiplier progress across the radar so the plane takes off gently
+      // and does not dash to high multipliers or the edge too quickly:
+      // at 1.00x: 0.00
+      // at 2.00x: ~0.17
+      // at 3.00x: ~0.28
+      // at 5.00x: ~0.41
+      // at 10.00x: ~0.55
+      // at 25.00x: ~0.72
+      // at 50.00x: ~0.84
+      // at 100.00x+: ~0.92
+      const multVal = Math.max(1.0, currentMult);
+      const multExcess = multVal - 1.0;
+      const progress = Math.min(
+        0.92,
+        Math.max(0.02, Math.log1p(multExcess * 0.75) / Math.log1p(99 * 0.75))
+      );
 
-        // Gentle bobbing oscillation when flying at higher multipliers
-        const bobX = gs.phase === 'FLYING' ? Math.sin(now * 0.003) * 4 : 0;
-        const bobY = gs.phase === 'FLYING' ? Math.cos(now * 0.004) * 5 : 0;
+      // Trajectory curve tip coordinates:
+      const targetX = originX + plotW * (0.04 + 0.86 * progress);
+      const targetY = originY - plotH * (0.04 + 0.82 * Math.pow(progress, 0.85));
 
-        const targetX = originX + plotW * progress + bobX;
-        const targetY = originY - plotH * Math.pow(progress, 1.18) + bobY;
+      // Stable quadratic curve control point (stable geometry, no wobble):
+      const cpX = originX + (targetX - originX) * 0.50;
+      const cpY = originY - (originY - targetY) * 0.10;
 
-        const cpX = originX + (targetX - originX) * 0.58;
-        const cpY = originY - (originY - targetY) * 0.14;
+      // 5. Render Glowing Trajectory Curve & Area Fill
+      if (anim.phase === 'FLYING' || anim.phase === 'CRASHED') {
+        // Red glowing area under curve
+        const areaGrad = ctx.createLinearGradient(originX, targetY, originX, originY);
+        areaGrad.addColorStop(0, 'rgba(225, 29, 72, 0.38)');
+        areaGrad.addColorStop(0.7, 'rgba(225, 29, 72, 0.12)');
+        areaGrad.addColorStop(1, 'rgba(225, 29, 72, 0.01)');
 
-        if (gs.phase === 'FLYING') {
-          // Fill area under flight curve
-          const areaGrad = ctx.createLinearGradient(originX, targetY, originX, originY);
-          areaGrad.addColorStop(0, 'rgba(225, 29, 72, 0.36)');
-          areaGrad.addColorStop(0.7, 'rgba(225, 29, 72, 0.10)');
-          areaGrad.addColorStop(1, 'rgba(225, 29, 72, 0.01)');
+        ctx.beginPath();
+        ctx.moveTo(originX, originY);
+        ctx.quadraticCurveTo(cpX, cpY, targetX, targetY);
+        ctx.lineTo(targetX, originY);
+        ctx.closePath();
+        ctx.fillStyle = areaGrad;
+        ctx.fill();
 
-          ctx.beginPath();
-          ctx.moveTo(originX, originY);
-          ctx.quadraticCurveTo(cpX, cpY, targetX, targetY);
-          ctx.lineTo(targetX, originY);
-          ctx.closePath();
-          ctx.fillStyle = areaGrad;
-          ctx.fill();
-
-          // Glowing Crimson Trajectory Curve
-          ctx.save();
-          ctx.beginPath();
-          ctx.moveTo(originX, originY);
-          ctx.quadraticCurveTo(cpX, cpY, targetX, targetY);
-          ctx.strokeStyle = '#F43F5E';
-          ctx.lineWidth = 4;
-          ctx.lineCap = 'round';
-          ctx.shadowColor = 'rgba(244, 63, 94, 0.75)';
-          ctx.shadowBlur = 14;
-          ctx.stroke();
-          ctx.restore();
-        }
-
-        // Compute plane position (if CRASHED, fly plane rapidly up-right off canvas)
-        let planeX = targetX;
-        let planeY = targetY;
-        let planeAngle = -0.34;
-
-        if (gs.phase === 'FLYING') {
-          const dx = targetX - cpX;
-          const dy = targetY - cpY;
-          planeAngle = Math.atan2(dy, dx);
-        } else {
-          planeX = targetX + 45;
-          planeY = targetY - 35;
-          planeAngle = -0.55;
-        }
-
-        // Draw Stylized Crimson Aviation Aircraft at (planeX, planeY)
+        // Glowing Crimson Trajectory Curve Line
         ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(originX, originY);
+        ctx.quadraticCurveTo(cpX, cpY, targetX, targetY);
+        ctx.strokeStyle = '#F43F5E';
+        ctx.lineWidth = 3.5;
+        ctx.lineCap = 'round';
+        ctx.shadowColor = 'rgba(244, 63, 94, 0.75)';
+        ctx.shadowBlur = 14;
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // 6. Draw Animated Airplane (Parked on BETTING, Flying smoothly on FLYING, Flew Away swoop on CRASHED)
+      let planeX = targetX;
+      let planeY = targetY;
+      let planeAngle = -0.32;
+      let planeAlpha = 1.0;
+      let showFlame = false;
+      let propScale = 0.5;
+
+      if (anim.phase === 'BETTING') {
+        // Plane parked at starting line waiting for next takeoff
+        planeX = originX + 18;
+        planeY = originY - 10;
+        planeAngle = -0.10;
+        planeAlpha = 0.85;
+        showFlame = false;
+        propScale = Math.abs(Math.sin(now * 0.012)); // Gentle idle propeller
+      } else if (anim.phase === 'FLYING') {
+        // Calculate tangent angle along the flight curve
+        const dx = targetX - cpX;
+        const dy = targetY - cpY;
+        const baseTangent = Math.atan2(dy, dx);
+        // Gentle aerodynamic pitch variation
+        planeAngle = baseTangent + Math.sin(now * 0.003) * 0.032;
+        // Gentle aerodynamic vertical float on plane body only (does NOT distort the ground curve)
+        const aeroFloat = Math.sin(now * 0.0035) * 3.2;
+        planeX = targetX;
+        planeY = targetY + aeroFloat;
+        planeAlpha = 1.0;
+        showFlame = true;
+        propScale = Math.abs(Math.sin(now * 0.045));
+      } else if (anim.phase === 'CRASHED') {
+        // Iconic Aviator "FLEW AWAY" swoop up and right into the distance
+        const crashElapsed = anim.crashTime ? Math.max(0, now - anim.crashTime) : 1000;
+        if (crashElapsed < 950) {
+          const flyDist = crashElapsed * 0.35;
+          planeX = targetX + flyDist;
+          planeY = targetY - flyDist * 0.72;
+          planeAngle = -0.65;
+          planeAlpha = Math.max(0, 1.0 - crashElapsed / 850);
+          showFlame = true;
+          propScale = Math.abs(Math.sin(now * 0.045));
+        } else {
+          planeAlpha = 0; // Off-screen after flying away
+        }
+      }
+
+      if (planeAlpha > 0.01) {
+        ctx.save();
+        ctx.globalAlpha = planeAlpha;
         ctx.translate(planeX, planeY);
         ctx.rotate(planeAngle);
 
-        // Jet / Engine Exhaust Flame when flying
-        if (gs.phase === 'FLYING') {
-          const flameLen = 18 + Math.sin(now * 0.05) * 6;
+        // Jet / Engine Exhaust Flame when active
+        if (showFlame) {
+          const flameLen = 16 + Math.sin(now * 0.05) * 5;
           const flameGrad = ctx.createLinearGradient(-22, 0, -22 - flameLen, 0);
           flameGrad.addColorStop(0, '#FDE047');
           flameGrad.addColorStop(0.5, '#F43F5E');
@@ -314,10 +443,9 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
         ctx.fill();
 
         // Spinning Front Propeller Blur
-        const propScale = Math.abs(Math.sin(now * 0.045));
         ctx.fillStyle = 'rgba(248, 250, 252, 0.85)';
         ctx.beginPath();
-        ctx.ellipse(26, 1, 2.2, 11 * propScale + 2, 0, 0, Math.PI * 2);
+        ctx.ellipse(26, 1, 2.0, 11 * propScale + 2, 0, 0, Math.PI * 2);
         ctx.fill();
 
         ctx.restore();
@@ -331,8 +459,9 @@ export const AviatorCanvas: React.FC<AviatorCanvasProps> = ({ gameState }) => {
     return () => cancelAnimationFrame(animationFrameId);
   }, []);
 
+  const maxBettingDuration = gameState.bettingDurationMs || 5000;
   const countdownSec = (displayCountdown / 1000).toFixed(1);
-  const progressPercent = Math.min(100, Math.max(0, (displayCountdown / 5000) * 100));
+  const progressPercent = Math.min(100, Math.max(0, (displayCountdown / maxBettingDuration) * 100));
 
   return (
     <div className="flex flex-col gap-3">

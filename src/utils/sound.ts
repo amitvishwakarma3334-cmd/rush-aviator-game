@@ -23,6 +23,7 @@ class SoundController {
 
   private currentRoundId: string | null = null;
   private currentPhase: 'BETTING' | 'FLYING' | 'CRASHED' = 'BETTING';
+  private flightStartedRoundId: string | null = null;
   private isPlayingFlight: boolean = false;
   private audioSourceUrl: string = '/assets/flight-audio.mp3';
   private listenersAttached: boolean = false;
@@ -173,13 +174,9 @@ class SoundController {
     if (!this.flightAudio) {
       this.flightAudio = new Audio(this.audioSourceUrl);
       this.flightAudio.preload = 'auto';
-      // If flight lasts longer than audio, do not restart or loop automatically
-      this.flightAudio.loop = false;
+      // Seamless loop for engine flight sound during long flights
+      this.flightAudio.loop = true;
       this.updateFlightAudioVolume();
-
-      this.flightAudio.addEventListener('ended', () => {
-        this.isPlayingFlight = false;
-      });
 
       this.flightAudio.addEventListener('error', (e) => {
         if (this.audioSourceUrl === '/assets/flight-audio.mp3') {
@@ -239,19 +236,19 @@ class SoundController {
   // Synchronizes audio playback strictly with authoritative game round state
   public syncWithGameState(phase: 'BETTING' | 'FLYING' | 'CRASHED', roundId: string): void {
     const prevPhase = this.currentPhase;
-    const roundChanged = this.currentRoundId !== roundId;
     this.currentPhase = phase;
     this.currentRoundId = roundId;
 
     if (phase === 'FLYING') {
-      // 1. When plane takes off and starts flying, immediately start playing from the beginning
-      // 5. Start audio again from the beginning when the next round's plane takes off
-      if (prevPhase !== 'FLYING' || roundChanged || !this.isPlayingFlight) {
+      // Start flight sound ONLY when flight actually starts for this specific round
+      if (this.flightStartedRoundId !== roundId) {
+        this.flightStartedRoundId = roundId;
         this.startFlightAudio();
       }
     } else {
-      // 3. Audio must stop immediately when plane crashes or round ends
-      // 4. Do not play audio during countdown, before takeoff, between rounds, or on ground
+      // Clear flight round flag so the next round can trigger cleanly
+      this.flightStartedRoundId = null;
+      // Audio must stop immediately when plane crashes or round is in betting countdown
       if (this.isPlayingFlight || prevPhase === 'FLYING') {
         this.stopFlightAudio();
       }

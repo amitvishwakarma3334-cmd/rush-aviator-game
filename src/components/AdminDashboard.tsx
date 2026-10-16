@@ -133,10 +133,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [depositBonusPercentInput, setDepositBonusPercentInput] = useState<string>('9');
   const [minWithdrawalInput, setMinWithdrawalInput] = useState<string>('500');
   const [referralBonusInput, setReferralBonusInput] = useState<string>('50');
-  const [houseEdgeInput, setHouseEdgeInput] = useState<string>('3');
-  const [maxMultiplierInput, setMaxMultiplierInput] = useState<string>('250');
-  const [bettingDurationInput, setBettingDurationInput] = useState<string>('5000');
-  const [crashedHoldInput, setCrashedHoldInput] = useState<string>('3500');
   const [configSaving, setConfigSaving] = useState<boolean>(false);
 
   const isAdmin = currentUser?.role === 'admin';
@@ -172,10 +168,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         setDepositBonusPercentInput(String(data.config.depositBonusPercent ?? 9));
         setMinWithdrawalInput(String(data.config.minWithdrawalAmount ?? 500));
         setReferralBonusInput(String(data.config.referralBonus ?? 50));
-        setHouseEdgeInput(String(data.config.houseEdgePercent ?? 3));
-        setMaxMultiplierInput(String(data.config.maxMultiplier ?? 250));
-        setBettingDurationInput(String(data.config.bettingDurationMs ?? 5000));
-        setCrashedHoldInput(String(data.config.crashedHoldMs ?? 3500));
       }
     } catch (err) {
       console.error('Failed to load admin overview:', err);
@@ -378,10 +370,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           depositBonusPercent: Number(depositBonusPercentInput),
           minWithdrawalAmount: Number(minWithdrawalInput),
           referralBonus: Number(referralBonusInput),
-          houseEdgePercent: Number(houseEdgeInput),
-          maxMultiplier: Number(maxMultiplierInput),
-          bettingDurationMs: Number(bettingDurationInput),
-          crashedHoldMs: Number(crashedHoldInput),
         }),
       });
       const data = await res.json();
@@ -398,10 +386,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         setDepositBonusPercentInput(String(data.config.depositBonusPercent ?? 9));
         setMinWithdrawalInput(String(data.config.minWithdrawalAmount ?? 500));
         setReferralBonusInput(String(data.config.referralBonus ?? 50));
-        setHouseEdgeInput(String(data.config.houseEdgePercent ?? 3));
-        setMaxMultiplierInput(String(data.config.maxMultiplier ?? 250));
-        setBettingDurationInput(String(data.config.bettingDurationMs ?? 5000));
-        setCrashedHoldInput(String(data.config.crashedHoldMs ?? 3500));
         setActionBanner({
           type: 'success',
           text: opts.resetDefaultQr
@@ -1124,226 +1108,129 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* TAB 3: FAIR FLIGHT ENGINE & LIVE FLIGHT CONTROLS */}
       {activeTab === 'gameEngine' && (
         <div className="space-y-6">
-          {/* Top Grid: Live Flight Telemetry & Admin Flight Control */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Live Round Telemetry & Crash Multiplier Display */}
-            <div className="lg:col-span-7 bg-[#121723] border border-slate-800 rounded-2xl p-6 space-y-5">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-                <div className="flex items-center gap-2 text-xs font-semibold text-rose-400">
-                  <Plane className="w-4 h-4" />
-                  <span>ADMIN FLIGHT CONTROL & CRASH TELEMETRY</span>
+          {/* Live Flight Telemetry & Admin Flight Control */}
+          <div className="bg-[#121723] border border-slate-800 rounded-2xl p-6 space-y-5">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2 text-xs font-semibold text-rose-400">
+                <Plane className="w-4 h-4" />
+                <span>ADMIN FLIGHT CONTROL & CRASH TELEMETRY</span>
+              </div>
+              {gameEngineStatus && (
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono-tabular uppercase ${
+                    gameEngineStatus.phase === 'FLYING'
+                      ? 'bg-amber-950/80 text-amber-300 border border-amber-600/60 animate-pulse'
+                      : gameEngineStatus.phase === 'BETTING'
+                      ? 'bg-blue-950/80 text-blue-300 border border-blue-600/60'
+                      : 'bg-rose-950/80 text-rose-300 border border-rose-600/60'
+                  }`}
+                >
+                  ● {gameEngineStatus.statusLabel || (gameEngineStatus.phase === 'BETTING' ? 'Waiting' : gameEngineStatus.phase === 'FLYING' ? 'Flying' : 'Crashed')}
+                </span>
+              )}
+            </div>
+
+            {/* Round KPIs */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div className="p-3.5 rounded-xl bg-[#0A0D14] border border-slate-800">
+                <div className="text-[11px] text-slate-400">Current Round Status</div>
+                <div className="text-lg font-bold font-display text-white mt-0.5">
+                  {gameEngineStatus?.phase === 'BETTING'
+                    ? 'Waiting / Countdown'
+                    : gameEngineStatus?.phase === 'FLYING'
+                    ? 'Flying in Progress'
+                    : 'Crashed'}
                 </div>
-                {gameEngineStatus && (
-                  <span
-                    className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono-tabular uppercase ${
-                      gameEngineStatus.phase === 'FLYING'
-                        ? 'bg-amber-950/80 text-amber-300 border border-amber-600/60 animate-pulse'
-                        : gameEngineStatus.phase === 'BETTING'
-                        ? 'bg-blue-950/80 text-blue-300 border border-blue-600/60'
-                        : 'bg-rose-950/80 text-rose-300 border border-rose-600/60'
-                    }`}
-                  >
-                    ● {gameEngineStatus.statusLabel || (gameEngineStatus.phase === 'BETTING' ? 'Waiting' : gameEngineStatus.phase === 'FLYING' ? 'Flying' : 'Crashed')}
-                  </span>
-                )}
+                <div className="text-[10px] text-slate-500 font-mono-tabular mt-0.5 truncate">
+                  {gameEngineStatus?.roundId || 'Initializing...'}
+                </div>
               </div>
 
-              {/* Round KPIs */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                <div className="p-3.5 rounded-xl bg-[#0A0D14] border border-slate-800">
-                  <div className="text-[11px] text-slate-400">Current Round Status</div>
-                  <div className="text-lg font-bold font-display text-white mt-0.5">
-                    {gameEngineStatus?.phase === 'BETTING'
-                      ? 'Waiting / Countdown'
+              <div className="p-3.5 rounded-xl bg-[#0A0D14] border border-slate-800">
+                <div className="text-[11px] text-slate-400">
+                  {gameEngineStatus?.phase === 'CRASHED' ? 'Final Crash Multiplier' : 'Live Multiplier'}
+                </div>
+                <div
+                  className={`text-2xl font-black font-mono-tabular mt-0.5 ${
+                    gameEngineStatus?.phase === 'CRASHED'
+                      ? 'text-rose-400'
                       : gameEngineStatus?.phase === 'FLYING'
-                      ? 'Flying in Progress'
-                      : 'Crashed'}
-                  </div>
-                  <div className="text-[10px] text-slate-500 font-mono-tabular mt-0.5 truncate">
-                    {gameEngineStatus?.roundId || 'Initializing...'}
-                  </div>
+                      ? 'text-amber-400 animate-pulse'
+                      : 'text-slate-300'
+                  }`}
+                >
+                  {gameEngineStatus
+                    ? gameEngineStatus.phase === 'CRASHED'
+                      ? `${(gameEngineStatus.crashPoint || gameEngineStatus.multiplier).toFixed(2)}x`
+                      : `${gameEngineStatus.multiplier.toFixed(2)}x`
+                    : '1.00x'}
                 </div>
-
-                <div className="p-3.5 rounded-xl bg-[#0A0D14] border border-slate-800">
-                  <div className="text-[11px] text-slate-400">
-                    {gameEngineStatus?.phase === 'CRASHED' ? 'Final Crash Multiplier' : 'Live Multiplier'}
-                  </div>
-                  <div
-                    className={`text-2xl font-black font-mono-tabular mt-0.5 ${
-                      gameEngineStatus?.phase === 'CRASHED'
-                        ? 'text-rose-400'
-                        : gameEngineStatus?.phase === 'FLYING'
-                        ? 'text-amber-400 animate-pulse'
-                        : 'text-slate-300'
-                    }`}
-                  >
-                    {gameEngineStatus
-                      ? gameEngineStatus.phase === 'CRASHED'
-                        ? `${(gameEngineStatus.crashPoint || gameEngineStatus.multiplier).toFixed(2)}x`
-                        : `${gameEngineStatus.multiplier.toFixed(2)}x`
-                      : '1.00x'}
-                  </div>
-                  <div className="text-[10px] text-slate-500 font-mono-tabular mt-0.5">
-                    Target Crash: {gameEngineStatus?.crashPoint ? `${gameEngineStatus.crashPoint.toFixed(2)}x` : '--'}
-                  </div>
-                </div>
-
-                <div className="p-3.5 rounded-xl bg-[#0A0D14] border border-slate-800 col-span-2 sm:col-span-1">
-                  <div className="text-[11px] text-slate-400">Next Round Crash Point</div>
-                  <div className="text-2xl font-black font-mono-tabular text-emerald-400 mt-0.5">
-                    {gameEngineStatus?.nextRound?.crashPoint
-                      ? `${gameEngineStatus.nextRound.crashPoint.toFixed(2)}x`
-                      : '--'}
-                  </div>
-                  <div className="text-[10px] text-slate-500 font-mono-tabular mt-0.5 truncate">
-                    Next ID: {gameEngineStatus?.nextRound?.roundId || '--'}
-                  </div>
+                <div className="text-[10px] text-slate-500 font-mono-tabular mt-0.5">
+                  Target Crash: {gameEngineStatus?.crashPoint ? `${gameEngineStatus.crashPoint.toFixed(2)}x` : '--'}
                 </div>
               </div>
 
-              {/* Active Flight Bets & Security Details */}
-              <div className="p-3.5 rounded-xl bg-[#0A0D14] border border-slate-800 space-y-2 text-xs">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-slate-400">Active Players in Round:</span>
-                  <span className="font-bold text-white font-mono-tabular">
-                    {gameEngineStatus?.activeBetsCount ?? 0} bets placed (₹{Number(gameEngineStatus?.totalBetPool || 0).toFixed(2)} pool)
-                  </span>
+              <div className="p-3.5 rounded-xl bg-[#0A0D14] border border-slate-800 col-span-2 sm:col-span-1">
+                <div className="text-[11px] text-slate-400">Next Round Crash Point</div>
+                <div className="text-2xl font-black font-mono-tabular text-emerald-400 mt-0.5">
+                  {gameEngineStatus?.nextRound?.crashPoint
+                    ? `${gameEngineStatus.nextRound.crashPoint.toFixed(2)}x`
+                    : '--'}
                 </div>
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/80 pt-2 font-mono-tabular">
-                  <span className="text-slate-400">Provably Fair SHA-256 Hash:</span>
-                  <span className="text-slate-300 text-[11px] truncate max-w-[280px]">
-                    {gameEngineStatus?.serverSeedHash || '--'}
-                  </span>
+                <div className="text-[10px] text-slate-500 font-mono-tabular mt-0.5 truncate">
+                  Next ID: {gameEngineStatus?.nextRound?.roundId || '--'}
                 </div>
-              </div>
-
-              {/* Admin Flight Ending Button */}
-              <div className="pt-2">
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 p-4 rounded-xl bg-gradient-to-r from-rose-950/40 to-slate-900 border border-rose-800/50">
-                  <div className="space-y-0.5">
-                    <div className="text-sm font-bold text-white flex items-center gap-2">
-                      <Flame className="w-4 h-4 text-rose-500" />
-                      <span>Admin-Controlled Flight Ending</span>
-                    </div>
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      End the flight immediately across all connected clients and record an authorized audit log entry.
-                    </p>
-                  </div>
-
-                  <button
-                    type="button"
-                    disabled={gameEngineStatus?.phase !== 'FLYING' || crashingFlight}
-                    onClick={handleEndFlight}
-                    className={`px-5 py-3 rounded-xl font-display font-extrabold text-xs tracking-wider transition-all whitespace-nowrap shrink-0 flex items-center justify-center gap-2 shadow-lg ${
-                      gameEngineStatus?.phase === 'FLYING' && !crashingFlight
-                        ? 'bg-rose-600 hover:bg-rose-500 text-white cursor-pointer active:scale-95 animate-pulse'
-                        : 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-60'
-                    }`}
-                  >
-                    <Plane className="w-4 h-4 rotate-45" />
-                    <span>{crashingFlight ? 'Ending Flight...' : 'End Flight / Crash Plane'}</span>
-                  </button>
-                </div>
-                {gameEngineStatus?.phase !== 'FLYING' && (
-                  <p className="text-[11px] text-slate-500 text-center mt-2">
-                    * The "End Flight / Crash Plane" button is only enabled when a flight is actively in progress.
-                  </p>
-                )}
               </div>
             </div>
 
-            {/* Future Engine Parameters Configuration */}
-            <div className="lg:col-span-5 bg-[#121723] border border-slate-800 rounded-2xl p-6 flex flex-col justify-between space-y-4">
-              <div>
-                <div className="flex items-center gap-2 text-xs font-semibold text-rose-400 mb-1">
-                  <Settings className="w-4 h-4" />
-                  <span>FUTURE ROUNDS CALIBRATION</span>
-                </div>
-                <h3 className="text-base font-display font-bold text-white">
-                  Game Engine Parameters
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
-                  Calibrate future crash generator curves on the server side. Changes apply to upcoming rounds without altering active bets.
-                </p>
-
-                <div className="space-y-3.5 mt-4">
-                  <div>
-                    <div className="flex justify-between text-xs text-slate-300 mb-1">
-                      <span>House Edge Percentage</span>
-                      <strong className="text-rose-400 font-mono-tabular">{houseEdgeInput}%</strong>
-                    </div>
-                    <input
-                      type="number"
-                      min="1"
-                      max="15"
-                      step="0.5"
-                      value={houseEdgeInput}
-                      onChange={(e) => setHouseEdgeInput(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-[#0A0D14] border border-slate-700 text-white font-mono-tabular text-xs focus:outline-none focus:border-rose-500"
-                    />
-                    <p className="text-[10px] text-slate-500 mt-0.5">Recommended: 3.0% (Range: 1.0% - 15.0%)</p>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between text-xs text-slate-300 mb-1">
-                      <span>Max Multiplier Cap</span>
-                      <strong className="text-rose-400 font-mono-tabular">{maxMultiplierInput}x</strong>
-                    </div>
-                    <input
-                      type="number"
-                      min="10"
-                      max="1000"
-                      step="10"
-                      value={maxMultiplierInput}
-                      onChange={(e) => setMaxMultiplierInput(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-[#0A0D14] border border-slate-700 text-white font-mono-tabular text-xs focus:outline-none focus:border-rose-500"
-                    />
-                    <p className="text-[10px] text-slate-500 mt-0.5">Maximum flight multiplier cap (Range: 10x - 1000x)</p>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs text-slate-300 mb-1">
-                        Bet Countdown (ms)
-                      </label>
-                      <input
-                        type="number"
-                        min="2000"
-                        max="15000"
-                        step="500"
-                        value={bettingDurationInput}
-                        onChange={(e) => setBettingDurationInput(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl bg-[#0A0D14] border border-slate-700 text-white font-mono-tabular text-xs focus:outline-none focus:border-rose-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-slate-300 mb-1">
-                        Crash Pause (ms)
-                      </label>
-                      <input
-                        type="number"
-                        min="1500"
-                        max="10000"
-                        step="500"
-                        value={crashedHoldInput}
-                        onChange={(e) => setCrashedHoldInput(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl bg-[#0A0D14] border border-slate-700 text-white font-mono-tabular text-xs focus:outline-none focus:border-rose-500"
-                      />
-                    </div>
-                  </div>
-                </div>
+            {/* Active Flight Bets & Security Details */}
+            <div className="p-3.5 rounded-xl bg-[#0A0D14] border border-slate-800 space-y-2 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-slate-400">Active Players in Round:</span>
+                <span className="font-bold text-white font-mono-tabular">
+                  {gameEngineStatus?.activeBetsCount ?? 0} bets placed (₹{Number(gameEngineStatus?.totalBetPool || 0).toFixed(2)} pool)
+                </span>
               </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/80 pt-2 font-mono-tabular">
+                <span className="text-slate-400">Provably Fair SHA-256 Hash:</span>
+                <span className="text-slate-300 text-[11px] truncate max-w-[280px]">
+                  {gameEngineStatus?.serverSeedHash || '--'}
+                </span>
+              </div>
+            </div>
 
-              <div className="pt-3 border-t border-slate-800">
+            {/* Admin Flight Ending Button */}
+            <div className="pt-2">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 p-4 rounded-xl bg-gradient-to-r from-rose-950/40 to-slate-900 border border-rose-800/50">
+                <div className="space-y-0.5">
+                  <div className="text-sm font-bold text-white flex items-center gap-2">
+                    <Flame className="w-4 h-4 text-rose-500" />
+                    <span>Admin-Controlled Flight Ending</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    End the flight immediately across all connected clients and record an authorized audit log entry.
+                  </p>
+                </div>
+
                 <button
                   type="button"
-                  onClick={() => handleSaveConfig(false)}
-                  disabled={configSaving}
-                  className="w-full py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-semibold text-xs transition-colors cursor-pointer"
+                  disabled={gameEngineStatus?.phase !== 'FLYING' || crashingFlight}
+                  onClick={handleEndFlight}
+                  className={`px-5 py-3 rounded-xl font-display font-extrabold text-xs tracking-wider transition-all whitespace-nowrap shrink-0 flex items-center justify-center gap-2 shadow-lg ${
+                    gameEngineStatus?.phase === 'FLYING' && !crashingFlight
+                      ? 'bg-rose-600 hover:bg-rose-500 text-white cursor-pointer active:scale-95 animate-pulse'
+                      : 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-60'
+                  }`}
                 >
-                  {configSaving ? 'Saving Parameters...' : 'Save Engine Settings'}
+                  <Plane className="w-4 h-4 rotate-45" />
+                  <span>{crashingFlight ? 'Ending Flight...' : 'End Flight / Crash Plane'}</span>
                 </button>
               </div>
+              {gameEngineStatus?.phase !== 'FLYING' && (
+                <p className="text-[11px] text-slate-500 text-center mt-2">
+                  * The "End Flight / Crash Plane" button is only enabled when a flight is actively in progress.
+                </p>
+              )}
             </div>
           </div>
 

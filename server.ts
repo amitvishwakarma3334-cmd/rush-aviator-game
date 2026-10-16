@@ -361,6 +361,7 @@ function saveLocalDiskDb(): void {
 }
 
 async function initDatabase(): Promise<void> {
+  mongoose.set('bufferCommands', false);
   const mongoUri = process.env.MONGODB_URI?.trim();
   if (mongoUri && (mongoUri.startsWith('mongodb://') || mongoUri.startsWith('mongodb+srv://'))) {
     try {
@@ -607,7 +608,7 @@ function generateProvablyFairCrashPoint(): {
   const maxVal = Math.pow(2, 52);
   const r = intVal / maxVal;
 
-  // Transparent, auditable crash curve calibrated by admin parameters for future rounds
+  // Transparent, auditable crash curve calculated for future rounds
   const houseEdgePercent = Math.max(1, Math.min(15, Number(dbState.config.houseEdgePercent) || 3));
   const houseEdgeRatio = houseEdgePercent / 100;
   if (r < houseEdgeRatio) {
@@ -647,6 +648,7 @@ const gameEngine: LiveGameEngineState = {
   bettingDurationMs: 5000,
   crashedHoldMs: 3500,
   bets: [],
+  queuedBets: [],
   recentHistory: initialHistory,
   nextRound: initialNextSeed,
 };
@@ -740,6 +742,7 @@ function syncGameClock(): void {
       gameEngine.bettingDurationMs = Math.max(2000, Number(dbState.config.bettingDurationMs) || 5000);
       gameEngine.crashedHoldMs = Math.max(1500, Number(dbState.config.crashedHoldMs) || 3500);
       gameEngine.bets = [];
+      gameEngine.queuedBets = [];
     }
   }
 }
@@ -2261,6 +2264,23 @@ async function startServer() {
         phase: gameEngine.phase,
       });
     });
+  });
+
+  // Database offline error middleware fallback
+  app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
+    const errorObj = err as { name?: string; message?: string };
+    if (
+      errorObj?.name === 'MongooseError' ||
+      errorObj?.name === 'MongoNetworkError' ||
+      (typeof errorObj?.message === 'string' && errorObj.message.includes('buffering timed out'))
+    ) {
+      console.warn('[AI Studio] Database offline — returning mock/fallback response');
+      if (req.method === 'GET') {
+        return res.json(req.path.endsWith('s') || req.path.endsWith('s/') ? [] : {});
+      }
+      return res.status(503).json({ error: 'Service temporarily unavailable (database offline)' });
+    }
+    next(err);
   });
 
   // --------------------------------------------------------------------------

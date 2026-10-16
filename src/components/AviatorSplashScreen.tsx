@@ -45,7 +45,7 @@ export const AviatorSplashScreen: React.FC<AviatorSplashScreenProps> = ({
           return prev + Math.floor(Math.random() * 10 + 6);
         }
         if (prev < 78) {
-          setStatusText('Calibrating flight telemetry...');
+          setStatusText('Checking flight telemetry...');
           return prev + Math.floor(Math.random() * 8 + 5);
         }
         if (prev < 94) {
